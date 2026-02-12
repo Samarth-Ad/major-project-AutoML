@@ -1,0 +1,4 @@
+CMD: 
+    ollama pull gpt-oss:120b-cloud
+    ollama run gpt-oss:120b-cloud
+    /venv/Scripts/activate

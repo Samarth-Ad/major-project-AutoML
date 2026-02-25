@@ -1,0 +1,59 @@
+{
+    "task_type": "regression",
+    "target_column": "Square_Footage",
+    "preprocessing": {
+        "missing": {
+            "strategy": "none",
+            "threshold": 0.0
+        },
+        "encoding": {
+            "method": "label",
+            "drop_high_cardinality_ratio": 0.0
+        },
+        "scaling": {
+            "method": "standard"
+        },
+        "skew_handling": {
+            "enabled": false,
+            "threshold": 0.0,
+            "method": "log1p"
+        },
+        "correlation_pruning": {
+            "enabled": false,
+            "threshold": 0.0
+        }
+    },
+    "modeling": {
+        "candidates": [
+            {
+                "name": "LinearRegression",
+                "parameters": {}
+            },
+            {
+                "name": "RandomForestRegressor",
+                "parameters": {
+                    "n_estimators": 100,
+                    "max_depth": null,
+                    "random_state": 42
+                }
+            },
+            {
+                "name": "XGBRegressor",
+                "parameters": {
+                    "n_estimators": 200,
+                    "learning_rate": 0.05,
+                    "max_depth": 6,
+                    "objective": "reg:squarederror",
+                    "random_state": 42
+                }
+            }
+        ],
+        "cross_validation_folds": 5,
+        "evaluation_metric": "rmse",
+        "split": {
+            "test_size": 0.2,
+            "random_state": 42,
+            "stratified": false
+        }
+    }
+}

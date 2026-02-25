@@ -1,3 +1,5 @@
+import profile
+
 import requests
 import json
 from schema import Strategy
@@ -11,42 +13,67 @@ class StrategicLM:
 
     def build_prompt(self, profile):
 
+        import json
+        profile_json = json.dumps(profile, indent=2)
+
         return f"""
-You are an expert ML strategist.
+You are an AutoML Planning Agent.
 
-CRITICAL RULES:
-- Output STRICT JSON only
-- No markdown
-- No extra text outside JSON
-
-Allowed models:
-LogisticRegression, RandomForest, XGBoost
-
-Allowed preprocessing:
-mean_imputation, median_imputation, drop_column
-one_hot, label_encoding
-standard_scaler, none
-
-Output format:
+You must generate a valid JSON that matches EXACTLY this structure:
 
 {{
+  "task_type": "classification" or "regression",
+  "target_column": string,
+
   "preprocessing": {{
-    "missing_value_handling": "",
-    "encoding": "",
-    "scaling": ""
+    "missing": {{
+      "strategy": "none" | "mean" | "median" | "mode",
+      "threshold": float
+    }},
+    "encoding": {{
+      "method": "label" | "one_hot" | "target",
+      "drop_high_cardinality_ratio": float
+    }},
+    "scaling": {{
+      "method": "none" | "standard" | "minmax"
+    }},
+    "skew_handling": {{
+      "enabled": true or false,
+      "threshold": float,
+      "method": "log1p"
+    }},
+    "correlation_pruning": {{
+      "enabled": true or false,
+      "threshold": float
+    }}
   }},
-  "model_candidates": [],
-  "reasoning_summary": ""
+
+  "modeling": {{
+    "candidates": [
+      {{
+        "name": string,
+        "parameters": object
+      }}
+    ],
+    "cross_validation_folds": int,
+    "evaluation_metric": string,
+    "split": {{
+      "test_size": float,
+      "random_state": int,
+      "stratified": true or false
+    }}
+  }}
 }}
 
-Dataset Profile:
-Task Type: {profile['task_type']}
-Rows: {profile['rows']}
-Features: {profile['features']}
-Numerical Features: {profile['numerical_features']}
-Categorical Features: {profile['categorical_features']}
-Missing Ratio: {profile['missing_ratio']}
-Imbalance Ratio: {profile['imbalance_ratio']}
+Rules:
+- Output ONLY valid JSON.
+- No markdown.
+- No explanation.
+- No comments.
+- Must be valid JSON.
+
+Dataset profile (JSON):
+{profile_json}
 """
 
     def extract_json(self, text):

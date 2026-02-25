@@ -63,7 +63,7 @@ Imbalance Ratio: {profile['imbalance_ratio']}
 
         if cached:
             print("Strategy loaded from cache.")
-            return cached
+            return cached["generated_strategy"]
 
         # ---------- Call LLM ----------
         prompt = self.build_prompt(profile)
@@ -85,8 +85,16 @@ Imbalance Ratio: {profile['imbalance_ratio']}
         strategy = Strategy.model_validate(strategy_dict)
         final_output = strategy.model_dump()
 
-        # ---------- Save to Cache ----------
-        file_path = self.cache.save_strategy(final_output, dataset_path, profile)
+        wrapped_output = {
+            "generated_strategy": final_output,
+            "metadata": {
+                "dataset_path": dataset_path,
+                "model_used": "gpt-oss:120b-cloud",
+                "temperature": 0.2
+            }
+        }
+
+        file_path = self.cache.save_strategy(wrapped_output, dataset_path, profile)
         print(f"Strategy saved at: {file_path}")
 
-        return final_output
+        return wrapped_output["generated_strategy"]

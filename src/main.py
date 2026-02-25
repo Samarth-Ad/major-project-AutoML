@@ -2,8 +2,9 @@ from dataset_profiler import profile_dataset
 from strategic_lm import StrategicLM
 
 datasets = [
-    "data/india_city_aqi_2015_2023.csv",
-    "data/stock_prices_daily.csv"
+    # "data/india_city_aqi_2015_2023.csv",
+    # "data/stock_prices_daily.csv",
+    "data/train.csv"
 ]
 
 lm = StrategicLM()

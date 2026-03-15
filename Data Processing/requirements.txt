@@ -1,0 +1,38 @@
+# =============================================================================
+# Agentic Pipeline Builder — Requirements
+# =============================================================================
+# Install all dependencies with:
+#     pip install -r requirements.txt
+#
+# Python version: 3.10+  (required for match/case and type union X | Y)
+# =============================================================================
+
+# ── Core Data Science ─────────────────────────────────────────────────────
+pandas>=2.0.0                  # DataFrame operations throughout the pipeline
+numpy>=1.24.0                  # Numeric operations, array manipulation
+scikit-learn>=1.3.0            # ML algorithms, preprocessing, metrics
+scipy>=1.11.0                  # Statistical functions used by LLM-generated code
+
+# ── Model Persistence ─────────────────────────────────────────────────────
+joblib>=1.3.0                  # Save/load trained models to disk
+
+# ── Configuration ─────────────────────────────────────────────────────────
+pyyaml>=6.0.0                  # Parse pipeline.yaml config files
+
+# ── HTTP (for LLM API calls) ──────────────────────────────────────────────
+# urllib.request is used (stdlib) — no extra HTTP library needed
+# But if you prefer requests:
+# requests>=2.31.0
+
+# ── Optional: enhanced visualisation ─────────────────────────────────────
+# matplotlib>=3.7.0            # Uncomment for pipeline visualisation
+# seaborn>=0.12.0              # Uncomment for statistical plots
+
+# ── Optional: advanced LLM frameworks ────────────────────────────────────
+# langchain>=0.1.0             # Uncomment to swap in LangChain orchestration
+# crewai>=0.1.0                # Uncomment to swap in CrewAI orchestration
+
+# ── Development / Testing ─────────────────────────────────────────────────
+# pytest>=7.4.0                # Uncomment for running test suite
+# pytest-cov>=4.1.0            # Uncomment for test coverage reports
+dotenv

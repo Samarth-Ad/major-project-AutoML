@@ -1,0 +1,52 @@
+# =============================================================================
+# Agentic Pipeline Builder — Pipeline Configuration
+# =============================================================================
+
+pipeline:
+  name: "Employee Attrition Pipeline"
+  description: "Predict which employees are likely to leave"
+  version: "1.0"
+
+# ── LLM Settings ─────────────────────────────────────────────────────────
+llm:
+  # Backend: "ollama" (local/cloud via Ollama) or "anthropic" (cloud API)
+  backend: "ollama"
+
+  # Ollama model — matches strategic_lm.py
+  # Pull with: ollama pull gpt-oss:120b-cloud
+  ollama_model:    "gpt-oss:120b-cloud"
+  ollama_base_url: "http://localhost:11434"
+
+  # Anthropic fallback (only used when backend = anthropic)
+  anthropic_model: "claude-sonnet-4-20250514"
+
+  max_retries: 3
+
+  # true = stop pipeline if any step fails (recommended for gpt-oss:120b-cloud)
+  abort_on_failure: true
+
+# ── Pipeline Steps ────────────────────────────────────────────────────────
+# These step names are sent to the LLM with your actual DataFrame schema.
+# The LLM reads YOUR column names and writes code specifically for them.
+steps:
+  - load_dataset
+  - remove_missing_values
+  - encode_categorical
+  - normalize_features
+  - feature_engineering
+  - train_model
+
+# ── Data Settings ─────────────────────────────────────────────────────────
+data:
+  # Path to your CSV file.
+  # Leave empty to auto-generate synthetic data.
+  # Use forward slashes even on Windows:  data/sample_data.csv
+  filepath: "data/train.csv"
+
+  # The column your model will predict.
+  # Change this to match your CSV:
+  #   Titanic dataset  -> "Survived"
+  #   HR dataset       -> "left"
+  #   Iris dataset     -> "species"
+  #   Generated data   -> "left_company"
+  target_column: "left_company"

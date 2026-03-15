@@ -1,0 +1,2 @@
+python main.py --data .\data\train.csv     
+ollama pull gpt-oss:120b-cloud     

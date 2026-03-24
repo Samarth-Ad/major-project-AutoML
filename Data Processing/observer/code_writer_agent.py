@@ -67,7 +67,6 @@ Output file structure
 
 from __future__ import annotations
 
-import ast
 import re
 import time
 from datetime import datetime, timezone
@@ -491,7 +490,41 @@ class CodeWriterAgent:
                 f"{rec.elapsed_ms/1000:.3f}s\n"
             )
 
-        return (
+        # ── Model & data saving code ──────────────────────────────────
+        save_code = (
+            "\n\n"
+            "# ════════════════════════════════════════════════════════════════\n"
+            "# SAVE OUTPUTS\n"
+            "# ════════════════════════════════════════════════════════════════\n"
+            "\n"
+            "import os\n"
+            "os.makedirs('outputs', exist_ok=True)\n"
+            "\n"
+            "# Save cleaned dataset\n"
+            "df.to_csv('outputs/cleaned_data.csv', index=False, encoding='utf-8')\n"
+            "print(f'Cleaned data saved -> outputs/cleaned_data.csv ({df.shape[0]} rows x {df.shape[1]} cols)')\n"
+            "\n"
+            "# Save trained model\n"
+            "import joblib\n"
+            "if 'trained_model' in dir():\n"
+            "    joblib.dump(trained_model, 'outputs/model.pkl')\n"
+            "    print(f'Model saved -> outputs/model.pkl ({type(trained_model).__name__})')\n"
+            "elif 'trained_models' in dir() and isinstance(trained_models, dict):\n"
+            "    # Save best model (first in dict) and all models\n"
+            "    best_name, best_model = next(iter(trained_models.items()))\n"
+            "    joblib.dump(best_model, 'outputs/model.pkl')\n"
+            "    print(f'Best model saved -> outputs/model.pkl ({best_name}: {type(best_model).__name__})')\n"
+            "    # Save all models\n"
+            "    for name, model in trained_models.items():\n"
+            "        joblib.dump(model, f'outputs/model_{name}.pkl')\n"
+            "    print(f'All {len(trained_models)} models saved to outputs/')\n"
+            "else:\n"
+            "    print('WARNING: No trained model found to save')\n"
+            "\n"
+            "print('All outputs saved to outputs/ directory')\n"
+        )
+
+        summary_block = (
             "\n\n"
             "# ════════════════════════════════════════════════════════════════\n"
             f"# PIPELINE EXECUTION SUMMARY — {status_str}\n"
@@ -506,6 +539,8 @@ class CodeWriterAgent:
             f"{step_summary_lines}"
             "# ════════════════════════════════════════════════════════════════\n"
         )
+
+        return save_code + summary_block
 
     # ------------------------------------------------------------------
     # Helpers

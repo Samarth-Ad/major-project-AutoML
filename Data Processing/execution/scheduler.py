@@ -447,16 +447,20 @@ class Scheduler:
                 )
                 return outcome, result["output_data"]
 
-            # ── Retry requested ───────────────────────────────────────
-            if status == "retry":
+            # ── Retry on recoverable failure ─────────────────────────
+            # Both "retry" and "failed" statuses are considered
+            # recoverable: the LLM may generate different (correct)
+            # code on the next attempt.
+            if status in ("retry", "failed"):
                 if attempt <= self.max_retries:
+                    self._logger.warning(
+                        f"💥  Step '{step_name}' failed: "
+                        f"{result.get('error', 'unknown error')}"
+                    )
                     continue
-                break  # retries exhausted
-
-            # ── Hard failure ──────────────────────────────────────────
-            if status == "failed":
+                # retries exhausted
                 self._logger.error(
-                    f"Step '{step_name}' failed: "
+                    f"💥  Step '{step_name}' failed: "
                     f"{result.get('error', 'unknown error')}"
                 )
                 break

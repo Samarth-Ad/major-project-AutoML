@@ -1,55 +1,31 @@
 """
 orchestrator/master_agent.py
 -----------------------------
-MasterAgent — The Top-Level Conductor
+MasterAgent — Adaptive Pipeline Conductor
 
-Role in the System
-------------------
-The MasterAgent is the single entry point for the entire pipeline.
-It owns nothing except coordination. It wires every module together
-and drives execution from start to finish.
+Two-phase execution
+-------------------
+Phase 1 — Bootstrap (always 2 steps, fixed):
+    1a. load_dataset        → loads CSV into DataFrame
+    1b. understand_data     → DataUnderstandingAgent analyses data,
+                              returns PipelineDecision
 
-Responsibilities
-----------------
-1.  Read pipeline configuration  (from YAML / JSON / Python list)
-2.  Initialise MemoryManager     (assigns pipeline_id, registers steps)
-3.  Validate the pipeline        (via AgentBuilder.validate_pipeline)
-4.  Initialise CodeWriterAgent   (creates pipeline_script.py header)
-5.  Build all agents             (via AgentBuilder.build_all)
-6.  Create and run the Scheduler (hands agents + memory + writer to it)
-7.  Collect the ExecutionReport
-8.  Print final summary
-9.  Return PipelineResult
+Phase 2 — Adaptive (steps decided by PipelineDecision):
+    The decision object's .steps list contains ONLY
+    the steps this specific dataset needs. MasterAgent builds agents
+    for exactly those steps and runs them.
 
-What MasterAgent does NOT do
------------------------------
-- Does not process any data itself
-- Does not write any code
-- Does not call the LLM directly
-- Does not know what any pipeline step does
+Nothing in Phase 2 is hardcoded. The step list comes entirely
+from the LLM + rule-based analysis of the actual data.
 
-It only orchestrates the modules that do those things.
+Config
+------
+config/pipeline.yaml contains:
+  - LLM settings (backend, model, retries)
+  - Data settings (filepath, target_column)
+  - Thresholds (when each step fires)
 
-Wiring Diagram
---------------
-    MasterAgent.run(pipeline_config)
-            |
-            +-- MemoryManager.init_pipeline(steps)
-            |       -> assigns pipeline_id
-            |
-            +-- AgentBuilder(steps, pipeline_id)
-            |       -> validates pipeline
-            |       -> builds DynamicAgent per step
-            |
-            +-- CodeWriterAgent.init_script()
-            |       -> writes pipeline_script.py header
-            |
-            +-- Scheduler.run(agents, initial_data)
-                    |
-                    +-- per step:
-                            agent.execute(data)
-                            memory.store_and_log_result()
-                            code_writer.observe()
+It does NOT contain a fixed step list.
 """
 
 from __future__ import annotations
@@ -63,6 +39,8 @@ from typing import Any, Dict, List, Optional, Union
 
 import yaml
 
+from agents.data_understanding_agent import DataUnderstandingAgent
+from agents.pipeline_decision import PipelineDecision
 from builder.agent_builder import AgentBuilder, create_builder
 from execution.scheduler import ExecutionReport, Scheduler
 from memory.memory_manager import MemoryManager
@@ -76,26 +54,7 @@ from utils.logger import PipelineLogger
 
 @dataclass
 class PipelineResult:
-    """
-    The final output of a complete pipeline run returned by MasterAgent.
-
-    Attributes
-    ----------
-    success : bool
-        True if every step completed without error.
-    pipeline_id : str
-        Unique identifier for this run.
-    final_data : Any
-        The processed dataset or model result from the last step.
-    report : ExecutionReport
-        Full per-step execution report from the Scheduler.
-    script_path : str
-        Absolute path to the auto-generated pipeline_script.py.
-    total_elapsed_s : float
-        Wall-clock seconds for the entire pipeline.
-    step_count : int
-        Number of steps that were attempted.
-    """
+    """Full output of a MasterAgent.run() call."""
     success:         bool
     pipeline_id:     str
     final_data:      Any
@@ -103,74 +62,37 @@ class PipelineResult:
     script_path:     str
     total_elapsed_s: float
     step_count:      int
+    decision:        Optional[PipelineDecision] = None
 
     def summary(self) -> str:
-        """One-line human-readable summary."""
         status = "SUCCESS" if self.success else "FAILED"
         return (
             f"PipelineResult("
-            f"id={self.pipeline_id}, "
-            f"status={status}, "
-            f"steps={self.step_count}, "
-            f"time={self.total_elapsed_s:.2f}s, "
-            f"script={self.script_path})"
+            f"id={self.pipeline_id}, status={status}, "
+            f"steps={self.step_count}, time={self.total_elapsed_s:.2f}s)"
         )
 
 
 # ---------------------------------------------------------------------------
-# Config loader
+# Config / YAML loader
 # ---------------------------------------------------------------------------
 
-def _load_pipeline_config(
-    config: Union[str, Path, List[str], Dict],
-) -> List[str]:
+def _load_yaml_config(config_path: Union[str, Path]) -> dict:
+    """Load the full pipeline.yaml as a dict. Returns {} on failure."""
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+
+def _extract_initial_steps_from_config(cfg: dict) -> List[str]:
     """
-    Parse a pipeline configuration into an ordered list of step names.
-
-    Accepts
-    -------
-    - list[str]  : already a list of step names
-    - dict       : dict with key "steps" or "pipeline"
-    - str / Path : path to a .yaml, .yml, or .json file
-
-    Returns
-    -------
-    list[str]  ordered pipeline step names.
+    Old YAML format had a steps: list. New format does not.
+    If someone passes a steps list (e.g. from CLI --steps), we use it.
+    Otherwise return [] to signal adaptive mode.
     """
-    # Already a list
-    if isinstance(config, list):
-        return [str(s).strip() for s in config if str(s).strip()]
-
-    # Dict with steps / pipeline key
-    if isinstance(config, dict):
-        steps = config.get("steps") or config.get("pipeline") or []
-        if not steps:
-            raise ValueError(
-                "Config dict must have a 'steps' or 'pipeline' key "
-                "containing the list of step names."
-            )
-        return [str(s).strip() for s in steps if str(s).strip()]
-
-    # File path
-    path = Path(config)
-    if not path.exists():
-        raise FileNotFoundError(f"Pipeline config file not found: {path}")
-
-    suffix = path.suffix.lower()
-
-    if suffix in (".yaml", ".yml"):
-        with path.open("r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-        return _load_pipeline_config(data)
-
-    if suffix == ".json":
-        with path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        return _load_pipeline_config(data)
-
-    raise ValueError(
-        f"Unsupported config format: '{suffix}'. Use .yaml, .yml, or .json"
-    )
+    return cfg.get("steps", [])
 
 
 # ---------------------------------------------------------------------------
@@ -179,46 +101,31 @@ def _load_pipeline_config(
 
 class MasterAgent:
     """
-    Top-level orchestrator that wires all system components together
-    and drives a complete pipeline execution from config to result.
+    Top-level conductor for the adaptive ML pipeline.
+
+    Two modes
+    ---------
+    Adaptive (default):
+        Pass a YAML config path or nothing.
+        DataUnderstandingAgent decides the steps.
+
+    Manual override:
+        Pass a list of step names directly.
+        Skips DataUnderstandingAgent.
+        Used for testing or when you know exactly what you need.
 
     Parameters
     ----------
-    api_key : str, optional
-        Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
+    api_key : str
+        Anthropic API key (ignored for Ollama backend).
     llm_model : str
-        Claude model used for all agent code generation.
+        Model name. Default: gpt-oss:120b-cloud.
     max_retries : int
-        Max retry attempts per step (passed to Scheduler).
+        Retries per failed step.
     abort_on_failure : bool
-        Stop pipeline on first failed step (passed to Scheduler).
+        Stop on first failed step.
     backoff_base : float
-        Exponential backoff base seconds between retries.
-
-    Example
-    -------
-    .. code-block:: python
-
-        from orchestrator.master_agent import MasterAgent
-
-        agent = MasterAgent()
-
-        # Run from a Python list
-        result = agent.run([
-            "load_dataset",
-            "remove_missing_values",
-            "encode_categorical",
-            "normalize_features",
-            "feature_engineering",
-            "train_model",
-        ])
-        print(result.summary())
-
-        # Run from YAML file
-        result = agent.run("config/pipeline.yaml")
-
-        # Dry-run (validate only, no LLM calls)
-        info = agent.dry_run(["load_dataset", "train_model"])
+        Exponential backoff base (seconds).
     """
 
     def __init__(
@@ -228,35 +135,30 @@ class MasterAgent:
         max_retries:      int   = 3,
         abort_on_failure: bool  = True,
         backoff_base:     float = 2.0,
+        config_path:      str   = "config/pipeline.yaml",
     ) -> None:
         self.llm_model        = llm_model
         self.max_retries      = max_retries
         self.abort_on_failure = abort_on_failure
         self.backoff_base     = backoff_base
+        self.config_path      = config_path
         self._logger          = PipelineLogger("orchestrator.MasterAgent")
 
-        # Determine active backend
         self._backend = os.environ.get("LLM_BACKEND", "ollama").lower()
-
-        # api_key is only relevant for Anthropic backend
-        self.api_key = ""
+        self.api_key  = ""
         if self._backend == "anthropic":
             self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
 
         self._logger.info(
-            f"MasterAgent initialised | "
-            f"backend={self._backend} | "
-            f"model={llm_model} | "
-            f"max_retries={max_retries} | "
+            f"MasterAgent initialised | backend={self._backend} | "
+            f"model={llm_model} | retries={max_retries} | "
             f"abort_on_failure={abort_on_failure}"
         )
 
-        # Only warn about missing key when Anthropic is the active backend
         if self._backend == "anthropic" and not self.api_key:
             self._logger.warning(
-                "LLM_BACKEND=anthropic but ANTHROPIC_API_KEY is not set. "
-                "Agents will fail when executed. "
-                "Switch to Ollama with: set LLM_BACKEND=ollama"
+                "LLM_BACKEND=anthropic but ANTHROPIC_API_KEY not set. "
+                "Use: set LLM_BACKEND=ollama"
             )
 
     # ------------------------------------------------------------------
@@ -265,93 +167,239 @@ class MasterAgent:
 
     def run(
         self,
-        pipeline_config: Union[str, Path, List[str], Dict],
+        pipeline_config: Union[str, Path, List[str], Dict] = "config/pipeline.yaml",
         initial_data:    Any = None,
+        target_column:   str = "",
     ) -> PipelineResult:
         """
-        Execute a full pipeline end-to-end.
+        Execute the full adaptive pipeline.
 
         Parameters
         ----------
         pipeline_config : str | Path | list | dict
-            Pipeline definition — step list, YAML path, or config dict.
-        initial_data : Any, optional
-            Pre-loaded data to begin the pipeline with.
-            Pass None when the first step is 'load_dataset'.
-
-        Returns
-        -------
-        PipelineResult
+            - str/Path  → path to pipeline.yaml  (adaptive mode)
+            - list[str] → explicit step list       (manual mode)
+            - dict      → config dict
+        initial_data : str | pd.DataFrame | None
+            Starting data. Pass a CSV filepath or None.
+        target_column : str, optional
+            Override the target column. Auto-inferred if empty.
         """
         master_start = time.perf_counter()
 
-        # ── Banner ────────────────────────────────────────────────────
         self._logger.info("")
         self._logger.info("=" * 60)
-        self._logger.info("  AGENTIC PIPELINE BUILDER — EXECUTION STARTING")
+        self._logger.info("  ADAPTIVE PIPELINE — EXECUTION STARTING")
         self._logger.info("=" * 60)
 
-        # ── 1. Parse config ───────────────────────────────────────────
-        self._logger.info("[1/6] Parsing pipeline configuration ...")
-        try:
-            steps = _load_pipeline_config(pipeline_config)
-        except (FileNotFoundError, ValueError) as exc:
-            self._logger.error(f"Config parse failed: {exc}")
-            raise
+        # ── Load YAML config ──────────────────────────────────────────
+        yaml_cfg     = {}
+        manual_steps = []
 
-        self._logger.info(
-            f"      {len(steps)} step(s) found: {' -> '.join(steps)}"
+        if isinstance(pipeline_config, list):
+            manual_steps = [str(s).strip() for s in pipeline_config if str(s).strip()]
+            self._logger.info(f"Manual mode: {len(manual_steps)} steps provided")
+
+        elif isinstance(pipeline_config, dict):
+            yaml_cfg     = pipeline_config
+            manual_steps = yaml_cfg.get("steps", [])
+
+        else:
+            config_path = Path(pipeline_config)
+            if config_path.exists():
+                yaml_cfg = _load_yaml_config(config_path)
+                # Check if old-style fixed steps exist in YAML
+                manual_steps = yaml_cfg.get("steps", [])
+            else:
+                self._logger.warning(
+                    f"Config file not found: {config_path}. "
+                    "Running in adaptive mode with default settings."
+                )
+
+        # ── Target column: CLI arg overrides YAML ────────────────────
+        target_col = (
+            target_column
+            or yaml_cfg.get("data", {}).get("target_column", "")
+            or os.environ.get("TARGET_COLUMN", "")
         )
 
-        # ── 2. Initialise MemoryManager ───────────────────────────────
-        self._logger.info("[2/6] Initialising MemoryManager ...")
-        memory      = MemoryManager()
-        pipeline_id = memory.init_pipeline(steps)
-        self._logger.info(f"      Pipeline ID: {pipeline_id}")
+        # ── Initialise memory ─────────────────────────────────────────
+        self._logger.info("[1] Initialising MemoryManager ...")
+        memory = MemoryManager()
 
-        # ── 3. Build AgentBuilder + validate ──────────────────────────
-        self._logger.info("[3/6] Building AgentFactory and validating pipeline ...")
+        # ── PHASE 1 — Bootstrap ───────────────────────────────────────
+        # Always run load_dataset first, then DataUnderstandingAgent.
+        # These two steps are fixed — all others are adaptive.
+
+        bootstrap_steps = ["load_dataset"]
+
+        if manual_steps:
+            # Manual mode — user provided explicit step list
+            # Skip DataUnderstandingAgent, trust the user
+            self._logger.info(
+                f"[2] Manual mode — using provided steps: {manual_steps}"
+            )
+            all_steps = manual_steps
+            decision  = None
+        else:
+            # Adaptive mode
+            bootstrap_steps = ["load_dataset", "understand_data"]
+            self._logger.info("[2] Adaptive mode — DataUnderstandingAgent will decide steps")
+            decision = None   # filled in after Phase 1 runs
+            all_steps = bootstrap_steps  # temporary — will be extended
+
+        # ── Initialise pipeline in memory ─────────────────────────────
+        pipeline_id = memory.init_pipeline(all_steps)
+        self._logger.info(f"     Pipeline ID: {pipeline_id}")
+
+        # ── Build initial AgentBuilder ────────────────────────────────
+        self._logger.info("[3] Building AgentFactory ...")
         builder = create_builder(
-            pipeline_steps = steps,
+            pipeline_steps = all_steps,
             pipeline_id    = pipeline_id,
             api_key        = self.api_key,
             llm_model      = self.llm_model,
         )
 
-        validation = builder.validate_pipeline(steps)
+        # ── PHASE 1 EXECUTION — load + understand ─────────────────────
+        if not manual_steps:
+            self._logger.info("[4] Phase 1 — Loading and understanding data ...")
 
-        for w in validation.get("warnings", []):
-            self._logger.warning(f"      WARNING: {w}")
+            # Run load_dataset agent
+            load_agent = builder.build_agent("load_dataset")
+            load_result = self._run_single_agent(load_agent, initial_data, memory)
 
-        if not validation["valid"]:
-            for e in validation["errors"]:
-                self._logger.error(f"      ERROR: {e}")
-            raise ValueError(
-                f"Pipeline validation failed:\n"
-                + "\n".join(validation["errors"])
+            if load_result["status"] != "success":
+                raise RuntimeError(
+                    f"load_dataset failed: {load_result.get('error', 'unknown')}"
+                )
+
+            loaded_data = load_result["output_data"]
+            memory.store_and_log_result("load_dataset", load_result)
+            memory.set_step_status("load_dataset", "success")
+            memory.set_current_data(loaded_data)
+
+            # Run DataUnderstandingAgent
+            self._logger.info("[4] Phase 1 — Running DataUnderstandingAgent ...")
+            dua = DataUnderstandingAgent(
+                llm_model   = self.llm_model,
+                api_key     = self.api_key,
+                config_path = str(pipeline_config)
+                              if isinstance(pipeline_config, (str, Path))
+                              else "config/pipeline.yaml",
+            )
+            # execute() returns (PipelineDecision, result_dict) tuple
+            decision, understand_result = dua.execute(
+                input_data    = loaded_data,
+                target_column = target_col,
             )
 
-        self._logger.info("      Validation passed.")
+            if understand_result["status"] != "success":
+                self._logger.warning(
+                    "DataUnderstandingAgent failed — using rule-based fallback steps"
+                )
+                from agents.data_understanding_agent import (
+                    _rule_based_decision, _analyse_data, _load_thresholds
+                )
+                thresholds = _load_thresholds(
+                    str(pipeline_config)
+                    if isinstance(pipeline_config, (str, Path))
+                    else "config/pipeline.yaml"
+                )
+                profile      = _analyse_data(loaded_data, thresholds, target_col)
+                fallback_dict = _rule_based_decision(profile, self._logger)
+                # Build a minimal PipelineDecision from fallback
+                from agents.data_understanding_agent import PipelineDecision as _PD
+                decision = _PD(
+                    problem_type    = fallback_dict["problem_type"],
+                    target_column   = fallback_dict["target_column"],
+                    steps           = fallback_dict["steps"],
+                    skipped         = fallback_dict["skipped"],
+                    models_to_try   = fallback_dict["models_to_try"],
+                    needs_tuning    = fallback_dict["needs_tuning"],
+                    n_rows          = int(loaded_data.shape[0]) if hasattr(loaded_data, "shape") else 0,
+                    n_cols          = int(loaded_data.shape[1]) if hasattr(loaded_data, "shape") else 0,
+                    has_nulls       = profile["checks"]["has_nulls"],
+                    is_imbalanced   = profile["is_imbalanced"],
+                    skewed_columns  = profile["skewed_columns"],
+                    high_corr_pairs = profile["high_correlation_pairs"],
+                    reasoning       = fallback_dict["reasoning"],
+                )
 
-        # ── 4. Build all agents ───────────────────────────────────────
-        self._logger.info("[4/6] Building DynamicAgents ...")
-        agents = builder.build_all()
-        builder.print_build_log()
-        self._logger.info(f"      {len(agents)} agent(s) ready.")
+            # Store decision in memory for downstream steps
+            memory.set_data_profile(decision.to_dict())
+            memory.store_and_log_result("understand_data", understand_result)
+            memory.set_step_status("understand_data", "success")
 
-        # ── 5. Initialise CodeWriterAgent ─────────────────────────────
-        self._logger.info("[5/6] Initialising CodeWriterAgent ...")
+            # ── PHASE 2 — Build adaptive step list ────────────────────
+            # decision.steps already contains the ordered step list
+            adaptive_steps = [s for s in decision.steps if s != "load_dataset"]
+
+            self._logger.info(
+                f"[5] Phase 2 — Adaptive steps decided:\n"
+                f"      {' -> '.join(adaptive_steps)}\n"
+                f"      Problem type  : {decision.problem_type}\n"
+                f"      Target column : {decision.target_column}\n"
+                f"      Models        : {decision.models_to_try}"
+            )
+
+            # Update builder with final step list
+            builder.rebuild(adaptive_steps)
+
+            # Re-init memory with full step list for accurate tracking
+            all_steps = ["load_dataset", "understand_data"] + adaptive_steps
+            memory.init_pipeline(all_steps)   # reset with full list
+            pipeline_id = memory.get_pipeline_id()
+
+            # Mark bootstrap steps as already done
+            memory.set_step_status("load_dataset",   "success")
+            memory.set_step_status("understand_data", "success")
+
+            # Set initial_data to the loaded DataFrame for Phase 2
+            initial_data = loaded_data
+
+        else:
+            # Manual mode — validate then proceed
+            validation = builder.validate_pipeline(all_steps)
+            if not validation["valid"]:
+                raise ValueError(
+                    "Pipeline validation failed:\n" +
+                    "\n".join(validation["errors"])
+                )
+
+        # ── PHASE 2 EXECUTION ─────────────────────────────────────────
+        self._logger.info("[6] Phase 2 — Building and running pipeline agents ...")
+
+        # Determine steps for Phase 2
+        if manual_steps:
+            phase2_steps = all_steps
+        else:
+            phase2_steps = adaptive_steps
+
+        # Build Phase 2 agents
+        p2_builder = create_builder(
+            pipeline_steps = phase2_steps,
+            pipeline_id    = pipeline_id,
+            api_key        = self.api_key,
+            llm_model      = self.llm_model,
+        )
+        agents = p2_builder.build_all()
+        p2_builder.print_build_log()
+        self._logger.info(f"     {len(agents)} agent(s) ready.")
+
+        # ── CodeWriterAgent ───────────────────────────────────────────
         code_writer = CodeWriterAgent(
             pipeline_id    = pipeline_id,
-            pipeline_steps = steps,
+            pipeline_steps = phase2_steps,
         )
         code_writer.init_script()
-        self._logger.info(
-            f"      Script path: {code_writer.get_script_path()}"
-        )
+        self._logger.info(f"     Script: {code_writer.get_script_path()}")
 
-        # ── 6. Run Scheduler ──────────────────────────────────────────
-        self._logger.info("[6/6] Launching Scheduler ...")
+        # Write bootstrap steps to the script if adaptive mode
+        if not manual_steps and decision:
+            _write_decision_to_script(code_writer, decision)
+
+        # ── Scheduler ────────────────────────────────────────────────
         scheduler = Scheduler(
             memory           = memory,
             code_writer      = code_writer,
@@ -369,10 +417,8 @@ class MasterAgent:
         total_elapsed = time.perf_counter() - master_start
         script_path   = str(code_writer.get_script_path().resolve())
 
-        # ── Print memory snapshot ─────────────────────────────────────
         memory.print_summary()
 
-        # ── Build PipelineResult ──────────────────────────────────────
         result = PipelineResult(
             success         = report.success,
             pipeline_id     = pipeline_id,
@@ -380,56 +426,90 @@ class MasterAgent:
             report          = report,
             script_path     = script_path,
             total_elapsed_s = total_elapsed,
-            step_count      = len(steps),
+            step_count      = len(phase2_steps),
+            decision        = decision,
         )
 
         self._print_final_banner(result)
         return result
 
     # ------------------------------------------------------------------
-    # Convenience wrappers
+    # Dry run
     # ------------------------------------------------------------------
-
-    def run_from_yaml(
-        self,
-        yaml_path:    Union[str, Path],
-        initial_data: Any = None,
-    ) -> PipelineResult:
-        """Run a pipeline defined in a YAML file."""
-        return self.run(yaml_path, initial_data=initial_data)
-
-    def run_from_list(
-        self,
-        steps:        List[str],
-        initial_data: Any = None,
-    ) -> PipelineResult:
-        """Run a pipeline defined as a Python list."""
-        return self.run(steps, initial_data=initial_data)
 
     def dry_run(
         self,
-        pipeline_config: Union[str, Path, List[str], Dict],
+        pipeline_config: Union[str, Path, List[str], Dict] = "config/pipeline.yaml",
     ) -> Dict[str, Any]:
         """
-        Validate a pipeline WITHOUT executing any agents or LLM calls.
-
-        Returns
-        -------
-        dict  with keys: valid, steps, resolved, errors, warnings
+        Validate config without any LLM calls or data processing.
+        Shows thresholds and confirms settings are valid.
         """
-        self._logger.info("DRY RUN — validating pipeline (no execution)")
+        self._logger.info("DRY RUN — no execution")
 
-        steps   = _load_pipeline_config(pipeline_config)
+        yaml_cfg = {}
+        if isinstance(pipeline_config, list):
+            # Manual mode — validate the explicit step list
+            steps = pipeline_config
+        else:
+            yaml_cfg = (
+                _load_yaml_config(pipeline_config)
+                if isinstance(pipeline_config, (str, Path))
+                else {}
+            )
+            steps = yaml_cfg.get("steps", [])
+
+        thresholds = yaml_cfg.get("thresholds", {})
+
+        if not steps:
+            # Adaptive mode — show default fallback steps as preview
+            from agents.data_understanding_agent import _rule_based_decision
+            preview_profile = {
+                "problem_type": "binary_classification",
+                "target_column": yaml_cfg.get("data", {}).get("target_column", "target"),
+                "skewed_columns": [],
+                "high_correlation_pairs": [],
+                "is_imbalanced": False,
+                "est_cols_after_encoding": 15,
+                "n_rows": 1000, "n_cols": 12, "n_numeric": 9,
+                "checks": {
+                    "has_nulls": True, "needs_smote": False,
+                    "needs_skewness": False, "needs_pca": False,
+                    "needs_tuning": True, "has_categoricals": True,
+                    "needs_scaling": True, "needs_feat_eng": True,
+                },
+                "thresholds": {
+                    "null_pct_to_trigger_imputation":   0.0,
+                    "imbalance_ratio_to_trigger_smote": 0.25,
+                    "skewness_to_trigger_correction":   1.0,
+                    "features_to_trigger_pca":          50,
+                    "rows_to_trigger_tuning":           500,
+                    **thresholds,
+                },
+            }
+            from utils.logger import PipelineLogger as _PL
+            fallback = _rule_based_decision(preview_profile, _PL("dry_run"))
+            steps    = fallback["steps"]
+            self._logger.info(
+                "Adaptive mode — showing default step preview "
+                "(actual steps decided at runtime from your data)"
+            )
+
         memory  = MemoryManager()
         pid     = memory.init_pipeline(steps)
         builder = create_builder(steps, pid, self.api_key, self.llm_model)
         result  = builder.validate_pipeline(steps)
 
-        print("\n" + "=" * 56)
+        print("\n" + "=" * 60)
         print("  DRY RUN RESULT")
-        print("=" * 56)
+        print("=" * 60)
+        print(f"  Mode       : {'Manual' if isinstance(pipeline_config, list) else 'Adaptive'}")
         print(f"  Valid      : {result['valid']}")
         print(f"  Steps ({len(steps)}): {' -> '.join(steps)}")
+        if thresholds:
+            print("\n  Thresholds:")
+            for k, v in thresholds.items():
+                print(f"    {k:<45}: {v}")
         if result["errors"]:
             print("\n  ERRORS:")
             for e in result["errors"]:
@@ -438,7 +518,7 @@ class MasterAgent:
             print("\n  WARNINGS:")
             for w in result["warnings"]:
                 print(f"    [!] {w}")
-        print("=" * 56 + "\n")
+        print("=" * 60 + "\n")
 
         return {
             "valid":    result["valid"],
@@ -449,12 +529,68 @@ class MasterAgent:
         }
 
     # ------------------------------------------------------------------
+    # Convenience wrappers
+    # ------------------------------------------------------------------
+
+    def run_from_yaml(self, yaml_path: Union[str, Path], initial_data: Any = None) -> PipelineResult:
+        return self.run(yaml_path, initial_data=initial_data)
+
+    def run_from_list(self, steps: List[str], initial_data: Any = None) -> PipelineResult:
+        return self.run(steps, initial_data=initial_data)
+
+    # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
 
+    def _run_single_agent(
+        self,
+        agent:      Any,
+        input_data: Any,
+        memory:     MemoryManager,
+    ) -> Dict[str, Any]:
+        """Run one agent with retry logic (used for bootstrap steps)."""
+        memory.set_step_running(agent.step_name)
+        last_result: Dict[str, Any] = {}
+
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                result = agent.execute(input_data)
+            except Exception as exc:
+                self._logger.error(
+                    f"Unhandled exception in {agent.agent_name}: {exc}"
+                )
+                result = {
+                    "status":         "failed",
+                    "error":          str(exc),
+                    "output_data":    input_data,
+                    "code_equivalent":"",
+                    "reasoning":      "",
+                    "step_name":      agent.step_name,
+                    "agent_name":     agent.agent_name,
+                    "elapsed_ms":     0,
+                    "task_id":        "bootstrap",
+                    "input_summary":  "",
+                    "output_summary": "",
+                    "timestamp":      "",
+                }
+
+            last_result = result
+            status      = result.get("status", "failed")
+
+            if status == "success":
+                return result
+            if status == "retry" and attempt <= self.max_retries:
+                wait = self.backoff_base ** attempt
+                self._logger.warning(f"Retry {attempt}/{self.max_retries} in {wait}s ...")
+                time.sleep(wait)
+                memory.increment_retry(agent.step_name)
+                continue
+            break
+
+        return last_result
+
     def _print_final_banner(self, result: PipelineResult) -> None:
-        """Print the completion banner."""
-        status = "COMPLETED SUCCESSFULLY" if result.success else "COMPLETED WITH ERRORS"
+        status     = "SUCCESS" if result.success else "FAILED"
         successful = result.report.successful_steps
         total      = result.step_count
 
@@ -466,5 +602,51 @@ class MasterAgent:
         self._logger.info(f"  Total time   : {result.total_elapsed_s:.3f}s")
         self._logger.info(f"  Steps        : {successful}/{total} succeeded")
         self._logger.info(f"  Script saved : {result.script_path}")
+        if result.decision:
+            self._logger.info(f"  Problem type : {result.decision.problem_type}")
+            self._logger.info(f"  Models used  : {result.decision.models_to_try}")
         self._logger.info("=" * 60)
         self._logger.info("")
+
+
+# ---------------------------------------------------------------------------
+# Helper: write decision summary into the generated script
+# ---------------------------------------------------------------------------
+
+def _write_decision_to_script(
+    code_writer: CodeWriterAgent,
+    decision:    PipelineDecision,
+) -> None:
+    """
+    Append a data understanding summary block to pipeline_script.py
+    so the generated notebook documents the decision reasoning.
+    """
+    try:
+        from pathlib import Path
+        script_path = code_writer.get_script_path()
+        if not script_path.exists():
+            return
+
+        block = (
+            "\n\n"
+            "# ════════════════════════════════════════════════════════════\n"
+            "# DATA UNDERSTANDING — PIPELINE DECISION\n"
+            "# ════════════════════════════════════════════════════════════\n"
+            f"# Problem type   : {decision.problem_type}\n"
+            f"# Target column  : {decision.target_column}\n"
+            f"# Models selected: {decision.models_to_try}\n"
+            f"# Steps computed : {decision.steps}\n"
+            "#\n"
+            "# Steps skipped and why:\n"
+        )
+        for step, reason in (decision.skipped or {}).items():
+            block += f"#   SKIP {step}: {reason}\n"
+        block += "#\n# LLM Reasoning:\n"
+        for step, reason in (decision.reasoning or {}).items():
+            block += f"#   {step}: {reason}\n"
+        block += "# ════════════════════════════════════════════════════════════\n"
+
+        with script_path.open("a", encoding="utf-8") as f:
+            f.write(block)
+    except Exception:
+        pass   # non-critical — don't crash the pipeline for a script annotation

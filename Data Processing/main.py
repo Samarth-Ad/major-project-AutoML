@@ -1,4 +1,4 @@
-"""
+r"""
 main.py
 -------
 Agentic Pipeline Builder System — Main Entry Point
@@ -163,7 +163,7 @@ def _check_ollama_running(url: str, model: str) -> None:
 def _save_outputs(result) -> dict:
     """
     Save all pipeline artifacts to disk.
-
+    Handles: single model, multiple models dict, ExecutionResult wrapper.
     Returns dict of saved file paths.
     """
     import pandas as pd
@@ -171,52 +171,69 @@ def _save_outputs(result) -> dict:
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
     saved = {}
 
-    final = result.final_data
-
-    # ── Unwrap _ExecutionResult if present ────────────────────────────
+    final     = result.final_data
     model_obj = None
     df_final  = None
 
+    # ── Unwrap output types ───────────────────────────────────────────
     if hasattr(final, "df") and hasattr(final, "model"):
-        # ExecutionResult from train_model step
+        # _ExecutionResult from train_model step
         df_final  = final.df
         model_obj = final.model
+
+    elif isinstance(final, dict):
+        # Could be a multi-model result or metrics dict
+        if "best_model" in final:
+            model_obj = final["best_model"]
+            df_final  = final.get("df", None)
+        elif "metrics" in final:
+            # Single model result with metrics inline
+            model_obj = final.get("model", None)
+            df_final  = final.get("df", None)
+
     elif isinstance(final, pd.DataFrame):
         df_final = final
-    # If final is a string (failed early — initial_data filepath), skip
 
-    # ── 1. Save processed CSV ─────────────────────────────────────────
+    # ── 1. Save cleaned DataFrame ─────────────────────────────────────
     if df_final is not None and isinstance(df_final, pd.DataFrame):
-        csv_path = OUTPUTS_DIR / "processed_data.csv"
+        csv_path = OUTPUTS_DIR / "cleaned_data.csv"
         df_final.to_csv(csv_path, index=False, encoding="utf-8")
         saved["processed_csv"] = str(csv_path)
         _logger.info(
-            f"Processed dataset saved -> {csv_path}  "
+            f"Cleaned dataset saved -> {csv_path} "
             f"({df_final.shape[0]} rows x {df_final.shape[1]} cols)"
         )
 
-    # ── 2. Save trained model ─────────────────────────────────────────
+    # ── 2. Save best model ────────────────────────────────────────────
     if model_obj is not None:
         try:
             import joblib
-            model_path = OUTPUTS_DIR / "trained_model.pkl"
+            model_path = OUTPUTS_DIR / "model.pkl"
             joblib.dump(model_obj, model_path)
             saved["trained_model"] = str(model_path)
             _logger.info(
-                f"Trained model saved -> {model_path}  "
+                f"Model saved -> {model_path} "
                 f"(type: {type(model_obj).__name__})"
             )
         except Exception as exc:
             _logger.warning(f"Could not save model: {exc}")
 
-    # ── 3. Save metrics if available ─────────────────────────────────
-    metrics_src = OUTPUTS_DIR.parent / "models" / "metrics.json"
+    # ── 3. Copy metrics if available ──────────────────────────────────
+    metrics_src = Path("models") / "metrics.json"
     if metrics_src.exists():
         import shutil
         metrics_dst = OUTPUTS_DIR / "metrics.json"
         shutil.copy(metrics_src, metrics_dst)
         saved["metrics"] = str(metrics_dst)
-        _logger.info(f"Metrics saved -> {metrics_dst}")
+
+    # ── 4. Save comparison table if available ─────────────────────────
+    comparison_src = Path("models") / "comparison.csv"
+    if comparison_src.exists():
+        import shutil
+        comparison_dst = OUTPUTS_DIR / "model_comparison.csv"
+        shutil.copy(comparison_src, comparison_dst)
+        saved["comparison"] = str(comparison_dst)
+        _logger.info(f"Model comparison table saved -> {comparison_dst}")
 
     return saved
 
@@ -229,41 +246,36 @@ def _generate_notebook(result, saved_paths: dict) -> str:
     """
     Convert the generated pipeline_script.py into a clean Jupyter notebook.
 
-    Each section (imports, step block) becomes its own cell.
-    No decorative output — just the exact code that ran, in cells.
+    Uses safe string-based splitting (no regex backtracking) to parse
+    the generated script into individual cells.
 
     Returns path to the saved .ipynb file.
     """
-    import re
-
     script_path = Path(result.script_path)
     if not script_path.exists():
         _logger.warning("pipeline_script.py not found — skipping notebook generation")
         return ""
 
-    source = script_path.read_text(encoding="utf-8")
+    try:
+        source = script_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        _logger.warning(f"Could not read pipeline script: {exc}")
+        return ""
 
-    # ── Split script into notebook cells ──────────────────────────────
-    cells = []
-
+    # ── Helpers ────────────────────────────────────────────────────────
     def make_code_cell(source_lines: str) -> dict:
         lines = [l + "\n" for l in source_lines.rstrip("\n").split("\n")]
         return {
-            "cell_type":       "code",
-            "execution_count": None,
-            "metadata":        {},
-            "outputs":         [],
-            "source":          lines,
+            "cell_type": "code", "execution_count": None,
+            "metadata": {}, "outputs": [], "source": lines,
         }
 
     def make_md_cell(text: str) -> dict:
-        return {
-            "cell_type": "markdown",
-            "metadata":  {},
-            "source":    [text],
-        }
+        return {"cell_type": "markdown", "metadata": {}, "source": [text]}
 
-    # Cell 1 — notebook title
+    cells = []
+
+    # Cell 1 — title
     cells.append(make_md_cell(
         f"# Agentic Pipeline — Auto-Generated Notebook\n"
         f"**Pipeline ID:** `{result.pipeline_id}`  \n"
@@ -271,104 +283,150 @@ def _generate_notebook(result, saved_paths: dict) -> str:
         f"**Total time:** {result.total_elapsed_s:.2f}s\n"
     ))
 
-    # Cell 2 — imports block
-    import_match = re.search(
-        r"# ── IMPORTS ─+\n(.*?)(?=\n_PIPELINE_ID)",
-        source, re.DOTALL
-    )
-    if import_match:
-        imports_code = import_match.group(1).strip()
-        # Add _PIPELINE_ID line
-        pipeline_id_match = re.search(r"_PIPELINE_ID = '.*?'", source)
-        if pipeline_id_match:
-            imports_code += "\n" + pipeline_id_match.group(0)
+    # ── Safe section splitting (no regex) ─────────────────────────────
+    # Split by the heavy-bar separator lines: ══════════ or ──────────
+    lines = source.split("\n")
+    sections = []          # list of (section_type, section_lines)
+    current_lines = []
+    current_type  = "preamble"
+
+    for line in lines:
+        stripped = line.strip()
+        # Detect step section headers: lines starting with '# STEP N:'
+        if stripped.startswith("# STEP ") and ":" in stripped:
+            # Save accumulated section
+            if current_lines:
+                sections.append((current_type, current_lines))
+            current_lines = [line]
+            current_type  = "step_header"
+            continue
+
+        # Detect separator lines (═ or ─ decorators)
+        if stripped and all(c in "#═─ " for c in stripped) and len(stripped) > 10:
+            if current_type == "step_header":
+                current_lines.append(line)
+            else:
+                if current_lines:
+                    sections.append((current_type, current_lines))
+                current_lines = [line]
+                current_type  = "separator"
+            continue
+
+        current_lines.append(line)
+        if current_type == "separator":
+            current_type = "code"
+        elif current_type == "step_header":
+            current_type = "step_comments"
+
+    if current_lines:
+        sections.append((current_type, current_lines))
+
+    # ── Parse sections into notebook cells ────────────────────────────
+    # Extract imports from preamble
+    preamble_code = []
+    for sec_type, sec_lines in sections:
+        if sec_type == "preamble":
+            for ln in sec_lines:
+                s = ln.strip()
+                if s.startswith("import ") or s.startswith("from "):
+                    preamble_code.append(ln)
+                elif s.startswith("_PIPELINE_ID"):
+                    preamble_code.append(ln)
+            break
+
+    if preamble_code:
         cells.append(make_md_cell("## Imports"))
-        cells.append(make_code_cell(imports_code))
+        cells.append(make_code_cell("\n".join(preamble_code)))
 
-    # Cells 3–N — one cell per pipeline step
-    step_pattern = re.compile(
-        r"# (═+)\n# STEP (\d+): (.+?)\n# ═+\n"
-        r"(?:# .*?\n)*?"              # comment lines (agent, status, etc.)
-        r"# LLM Reasoning:\n"
-        r"((?:#.*?\n)*)"              # reasoning lines
-        r"# ═+\n\n"
-        r"(.*?)(?=\n\n# [═─]|\Z)",   # actual code
-        re.DOTALL
-    )
+    # Process step blocks: find "# STEP N: NAME" headers and collect
+    # the comment block (reasoning) and the code that follows
+    i = 0
+    while i < len(sections):
+        sec_type, sec_lines = sections[i]
+        # Look for step header lines
+        step_text = "\n".join(sec_lines)
+        if "# STEP " in step_text and ":" in step_text:
+            # Parse step number and name
+            for ln in sec_lines:
+                if ln.strip().startswith("# STEP "):
+                    parts = ln.strip().lstrip("# ").split(":", 1)
+                    step_num = parts[0].replace("STEP ", "").strip()
+                    step_name = parts[1].strip() if len(parts) > 1 else f"Step {step_num}"
+                    break
+            else:
+                step_num, step_name = "?", "Unknown"
 
-    for match in step_pattern.finditer(source):
-        step_num  = match.group(2)
-        step_name = match.group(3).replace("_", " ").title()
-        reasoning = match.group(4).replace("#   ", "").replace("# ", "").strip()
-        code_body = match.group(5).strip()
+            # Collect reasoning from comment lines
+            reasoning_lines = []
+            for ln in sec_lines:
+                s = ln.strip()
+                if s.startswith("# ") and not s.startswith("# STEP") and not all(c in "#═─ " for c in s):
+                    reasoning_lines.append(s.lstrip("# ").strip())
 
-        # Markdown cell with step name + reasoning
-        cells.append(make_md_cell(
-            f"## Step {step_num}: {step_name}\n\n"
-            f"**LLM Reasoning:** {reasoning}\n"
-        ))
+            # Find the code section that follows
+            code_lines = []
+            j = i + 1
+            while j < len(sections):
+                next_type, next_lines = sections[j]
+                next_text = "\n".join(next_lines)
+                if "# STEP " in next_text or "PIPELINE EXECUTION" in next_text:
+                    break
+                # Collect non-comment, non-separator code
+                for ln in next_lines:
+                    s = ln.strip()
+                    if s and not all(c in "#═─ " for c in s):
+                        code_lines.append(ln)
+                j += 1
 
-        if code_body:
-            cells.append(make_code_cell(code_body))
+            # Only add cells if there's actual code
+            reasoning_text = " ".join(reasoning_lines[:5]) if reasoning_lines else ""
+            display_name = step_name.replace("_", " ").title()
+            md = f"## Step {step_num}: {display_name}\n"
+            if reasoning_text:
+                md += f"\n**LLM Reasoning:** {reasoning_text}\n"
+            cells.append(make_md_cell(md))
+
+            clean_code = "\n".join(code_lines).strip()
+            if clean_code:
+                cells.append(make_code_cell(clean_code))
+
+            i = j
+            continue
+        i += 1
 
     # Final cell — load saved outputs
-    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-    load_outputs_code = "# ── Load pipeline outputs ────────────────────────────\n"
-    load_outputs_code += "import pandas as pd\n"
-
+    load_code = "# ── Load pipeline outputs ────────────────────────────\n"
+    load_code += "import pandas as pd\n"
     if "processed_csv" in saved_paths:
         rel = Path(saved_paths["processed_csv"]).name
-        load_outputs_code += (
-            f"\n# Processed dataset\n"
-            f"df_processed = pd.read_csv('outputs/{rel}', encoding='utf-8')\n"
-            f"print(f'Processed data: {{df_processed.shape[0]}} rows x {{df_processed.shape[1]}} cols')\n"
-            f"df_processed.head()\n"
+        load_code += (
+            f"\n# Cleaned dataset\n"
+            f"df_clean = pd.read_csv('outputs/{rel}', encoding='utf-8')\n"
+            f"print(f'Cleaned data: {{df_clean.shape[0]}} rows x {{df_clean.shape[1]}} cols')\n"
+            f"df_clean.head()\n"
         )
-
     if "trained_model" in saved_paths:
         rel = Path(saved_paths["trained_model"]).name
-        load_outputs_code += (
-            f"\n# Trained model\n"
-            f"import joblib\n"
+        load_code += (
+            f"\n# Trained model\nimport joblib\n"
             f"model = joblib.load('outputs/{rel}')\n"
             f"print(f'Model type: {{type(model).__name__}}')\n"
-            f"print(f'Model params: {{model.get_params()}}')\n"
         )
-
-    if "metrics" in saved_paths:
-        load_outputs_code += (
-            f"\n# Model metrics\n"
-            f"import json\n"
-            f"metrics = json.load(open('outputs/metrics.json'))\n"
-            f"print('Metrics:', metrics)\n"
-        )
-
     cells.append(make_md_cell("## Saved Outputs"))
-    cells.append(make_code_cell(load_outputs_code))
+    cells.append(make_code_cell(load_code))
 
     # ── Build notebook JSON ───────────────────────────────────────────
     notebook = {
-        "nbformat":       4,
-        "nbformat_minor": 5,
+        "nbformat": 4, "nbformat_minor": 5,
         "metadata": {
-            "kernelspec": {
-                "display_name": "Python 3",
-                "language":     "python",
-                "name":         "python3",
-            },
-            "language_info": {
-                "name":    "python",
-                "version": "3.11.0",
-            },
+            "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
+            "language_info": {"name": "python", "version": "3.11.0"},
         },
         "cells": cells,
     }
 
     nb_path = OUTPUTS_DIR / "pipeline.ipynb"
-    nb_path.write_text(
-        json.dumps(notebook, indent=1, ensure_ascii=False),
-        encoding="utf-8"
-    )
+    nb_path.write_text(json.dumps(notebook, indent=1, ensure_ascii=False), encoding="utf-8")
     _logger.info(f"Jupyter notebook saved -> {nb_path}")
     return str(nb_path)
 
@@ -390,35 +448,45 @@ def _print_summary(result, saved_paths: dict, nb_path: str) -> None:
     print(f"  Steps        : {result.report.successful_steps}/{result.step_count} succeeded")
     print()
 
-    # Step breakdown
     for outcome in result.report.outcomes:
         icon = "[OK]  " if outcome.succeeded else "[FAIL]"
-        print(f"  {icon} {outcome.step_index}. {outcome.step_name:<35} {outcome.elapsed_s:.2f}s")
+        skip = " [conditional skip]" if outcome.status == "skipped" else ""
+        print(f"  {icon} {outcome.step_index}. {outcome.step_name:<35} {outcome.elapsed_s:.2f}s{skip}")
 
     print()
     print("  SAVED FILES:")
 
     if "processed_csv" in saved_paths:
-        p = Path(saved_paths["processed_csv"])
+        p  = Path(saved_paths["processed_csv"])
         df = pd.read_csv(p, encoding="utf-8")
-        print(f"  [CSV]   {p}  ({df.shape[0]} rows x {df.shape[1]} cols)")
-        print(f"          Columns: {list(df.columns)}")
+        print(f"  [CSV]      {p}")
+        print(f"             {df.shape[0]} rows x {df.shape[1]} columns")
+        print(f"             Columns: {list(df.columns)}")
 
     if "trained_model" in saved_paths:
-        print(f"  [MODEL] {saved_paths['trained_model']}")
+        print(f"  [MODEL]    {saved_paths['trained_model']}")
 
     if "metrics" in saved_paths:
         with open(saved_paths["metrics"]) as f:
             m = json.load(f)
-        print(f"  [METRICS] {saved_paths['metrics']}")
+        print(f"  [METRICS]  {saved_paths['metrics']}")
         for k, v in m.items():
-            print(f"            {k:<15}: {v}")
+            if isinstance(v, (int, float)):
+                print(f"             {k:<18}: {v}")
+
+    if "comparison" in saved_paths:
+        comp = pd.read_csv(saved_paths["comparison"])
+        print(f"  [COMPARISON] {saved_paths['comparison']}")
+        print(comp.to_string(index=False))
 
     if nb_path:
         print(f"  [NOTEBOOK] {nb_path}")
-        print(f"             Open with: jupyter notebook {nb_path}")
+        print(f"             Open: jupyter notebook {nb_path}")
 
-    print(f"  [SCRIPT] {result.script_path}")
+    if "report" in saved_paths:
+        print(f"  [REPORT]   {saved_paths['report']}")
+
+    print(f"  [SCRIPT]   {result.script_path}")
     print("=" * 60)
     print()
 
@@ -439,25 +507,28 @@ def run_pipeline(args: argparse.Namespace) -> int:
 
     api_key        = args.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
     resolved_model = os.environ.get("OLLAMA_MODEL", "gpt-oss:120b-cloud")
+    config_path    = Path(args.config)
+
+    # Read target column from YAML if not on CLI
+    target_column = ""
+    if config_path.exists():
+        import yaml as _yaml
+        try:
+            cfg = _yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            target_column = cfg.get("data", {}).get("target_column", "") or ""
+        except Exception:
+            pass
 
     master = MasterAgent(
         api_key          = api_key,
         llm_model        = resolved_model,
         max_retries      = args.max_retries,
         abort_on_failure = not args.no_abort,
+        config_path      = str(config_path),
     )
 
-    if args.steps:
-        pipeline_source = args.steps
-    else:
-        config_path = Path(args.config)
-        if not config_path.exists():
-            _logger.error(f"Config not found: {config_path}")
-            return 1
-        pipeline_source = config_path
-
     if args.dry_run:
-        res = master.dry_run(pipeline_source)
+        res = master.dry_run(config_path)
         return 0 if res["valid"] else 1
 
     initial_data = None
@@ -468,10 +539,16 @@ def run_pipeline(args: argparse.Namespace) -> int:
             return 1
         initial_data = str(data_path)
 
+    # pipeline_source: steps list (legacy) or config path (adaptive)
+    if args.steps:
+        config_path = args.steps   # pass list directly → legacy mode
+
+    # Execute pipeline
     try:
         result = master.run(
-            pipeline_config = pipeline_source,
+            pipeline_config = config_path if not args.steps else args.steps,
             initial_data    = initial_data,
+            target_column   = target_column,
         )
     except ValueError as exc:
         _logger.error(f"Config error: {exc}")
@@ -487,7 +564,20 @@ def run_pipeline(args: argparse.Namespace) -> int:
     saved_paths = _save_outputs(result)
 
     # ── Generate notebook ─────────────────────────────────────────────
-    nb_path = _generate_notebook(result, saved_paths)
+    try:
+        nb_path = _generate_notebook(result, saved_paths)
+    except Exception as exc:
+        _logger.warning(f"Notebook generation failed: {exc}")
+        nb_path = ""
+
+    # ── Generate documentation report ─────────────────────────────────
+    try:
+        from agents.documentation_agent import DocumentationAgent
+        doc_agent = DocumentationAgent()
+        report_path = doc_agent.generate_report(result, saved_paths)
+        saved_paths["report"] = report_path
+    except Exception as exc:
+        _logger.warning(f"Report generation failed: {exc}")
 
     # ── Print plain summary ───────────────────────────────────────────
     _print_summary(result, saved_paths, nb_path)

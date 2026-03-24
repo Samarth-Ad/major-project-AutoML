@@ -32,9 +32,9 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 import uuid
 from copy import deepcopy
+from numbers import Number
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -175,8 +175,11 @@ class ShortTermMemory:
         result:
             The dict returned by the agent's ``execute()`` method.
         """
+        # Shallow copy to avoid mutating caller's dict, but
+        # do NOT deep-copy output_data (may be a large DataFrame).
+        safe = {k: v for k, v in result.items()}
         with self._lock:
-            self._state["step_results"][step_name] = deepcopy(result)
+            self._state["step_results"][step_name] = safe
 
     def get_step_result(self, step_name: str) -> Optional[Dict[str, Any]]:
         """Return the stored result for a step, or None if not yet run."""
@@ -258,6 +261,50 @@ class LongTermMemory:
             with path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(record, default=str) + "\n")
 
+    @staticmethod
+    def _make_serializable(result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Return a JSON-safe copy of an agent result dict.
+
+        Replaces non-serializable objects (DataFrames, numpy arrays,
+        models) with lightweight type/shape summaries so that
+        ``json.dumps(..., default=str)`` doesn't produce multi-MB strings.
+        """
+        import pandas as _pd
+        import numpy as _np
+
+        safe: Dict[str, Any] = {}
+        for key, val in result.items():
+            if isinstance(val, _pd.DataFrame):
+                safe[key] = {
+                    "_type": "DataFrame",
+                    "shape": list(val.shape),
+                    "columns": list(val.columns[:20]),
+                    "nulls": int(val.isnull().sum().sum()),
+                }
+            elif isinstance(val, _np.ndarray):
+                safe[key] = {
+                    "_type": "ndarray",
+                    "shape": list(val.shape),
+                    "dtype": str(val.dtype),
+                }
+            elif isinstance(val, (str, Number, bool, type(None))):
+                safe[key] = val
+            elif isinstance(val, (dict, list)):
+                # Attempt direct serialization; fall back to str repr
+                try:
+                    json.dumps(val, default=str)
+                    safe[key] = val
+                except (TypeError, ValueError):
+                    safe[key] = str(val)[:500]
+            else:
+                # Model objects, custom wrappers, etc.
+                safe[key] = {
+                    "_type": type(val).__name__,
+                    "_repr": str(val)[:300],
+                }
+        return safe
+
     def log_agent_output(
         self,
         pipeline_id: str,
@@ -279,7 +326,7 @@ class LongTermMemory:
         record = {
             "pipeline_id": pipeline_id,
             "step_name": step_name,
-            "result": result,
+            "result": self._make_serializable(result),
         }
         self._append_jsonl(_AGENT_LOG_FILE, record)
         self._logger.debug(f"Agent output logged for step '{step_name}'")
@@ -402,6 +449,19 @@ class MemoryManager:
         """Initialise both memory layers for a new pipeline run."""
         pid = self._st.init_pipeline(steps)
         return pid
+
+    # ── Data profile (set by DataUnderstandingAgent) ──────────────────
+    def set_data_profile(self, profile: Dict[str, Any]) -> None:
+        """
+        Store the data understanding profile produced by DataUnderstandingAgent.
+        Used by MasterAgent to decide which steps to run.
+        """
+        with self._st._lock:
+            self._st._state["data_profile"] = profile
+
+    def get_data_profile(self) -> Dict[str, Any]:
+        """Return the stored data profile, or empty dict if not yet set."""
+        return self._st._state.get("data_profile", {})
 
     def set_step_running(self, step_name: str) -> None:
         self._st.set_step_running(step_name)

@@ -1,52 +1,36 @@
 # =============================================================================
-# Agentic Pipeline Builder — Pipeline Configuration
+# Agentic Pipeline Builder — Configuration
+# =============================================================================
+# Steps are NO LONGER listed here.
+# They are decided at runtime by DataUnderstandingAgent based on your data.
+# Only settings live in this file.
 # =============================================================================
 
 pipeline:
-  name: "Employee Attrition Pipeline"
-  description: "Predict which employees are likely to leave"
-  version: "1.0"
+  name: "Adaptive ML Pipeline"
+  description: "Fully adaptive — steps chosen based on actual data characteristics"
+  version: "2.0"
 
 # ── LLM Settings ─────────────────────────────────────────────────────────
 llm:
-  # Backend: "ollama" (local/cloud via Ollama) or "anthropic" (cloud API)
-  backend: "ollama"
-
-  # Ollama model — matches strategic_lm.py
-  # Pull with: ollama pull gpt-oss:120b-cloud
+  backend:         "ollama"
   ollama_model:    "gpt-oss:120b-cloud"
   ollama_base_url: "http://localhost:11434"
-
-  # Anthropic fallback (only used when backend = anthropic)
   anthropic_model: "claude-sonnet-4-20250514"
-
-  max_retries: 3
-
-  # true = stop pipeline if any step fails (recommended for gpt-oss:120b-cloud)
+  max_retries:     3
   abort_on_failure: true
-
-# ── Pipeline Steps ────────────────────────────────────────────────────────
-# These step names are sent to the LLM with your actual DataFrame schema.
-# The LLM reads YOUR column names and writes code specifically for them.
-steps:
-  - load_dataset
-  - remove_missing_values
-  - encode_categorical
-  - normalize_features
-  - feature_engineering
-  - train_model
 
 # ── Data Settings ─────────────────────────────────────────────────────────
 data:
-  # Path to your CSV file.
-  # Leave empty to auto-generate synthetic data.
-  # Use forward slashes even on Windows:  data/sample_data.csv
-  filepath: "data/train.csv"
+  filepath:      ""            # leave empty to auto-generate synthetic data
+  target_column: ""            # leave empty to auto-infer from data
 
-  # The column your model will predict.
-  # Change this to match your CSV:
-  #   Titanic dataset  -> "Survived"
-  #   HR dataset       -> "left"
-  #   Iris dataset     -> "species"
-  #   Generated data   -> "left_company"
-  target_column: "left_company"
+# ── Adaptive Step Thresholds ──────────────────────────────────────────────
+# These control WHEN a step is triggered automatically.
+# You can tune them without touching any Python code.
+thresholds:
+  null_pct_to_trigger_imputation:    0.0    # any nulls → run missing value step
+  imbalance_ratio_to_trigger_smote:  0.25   # minority < 25% → run SMOTE
+  skewness_to_trigger_correction:    1.0    # |skew| > 1.0 → run skewness fix
+  features_to_trigger_pca:           50     # cols after encoding > 50 → run PCA
+  rows_to_trigger_tuning:            500    # rows > 500 → run hyperparameter tuning

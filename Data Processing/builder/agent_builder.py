@@ -160,20 +160,22 @@ class AgentBuilder:
     Dynamic factory that creates DynamicAgent instances for any step name.
 
     Works with ANY backend — Ollama (gpt-oss:120b-cloud, llama3.1, etc.)
-    or Anthropic Claude. Backend is controlled by the LLM_BACKEND
-    environment variable set in main.py / config/pipeline.yaml.
+    or Anthropic Claude. Backend controlled by LLM_BACKEND env var.
+
+    Supports conditional pipelines — the step list is determined at
+    runtime by DataUnderstandingAgent, not hardcoded in YAML.
+    Use rebuild(new_steps) after the data profile is known.
 
     Parameters
     ----------
     pipeline_steps : list[str]
-        The complete ordered list of steps in the pipeline.
+        Initial step list. Can be [] and updated via rebuild().
     pipeline_id : str
-        The unique run identifier from MemoryManager.
+        Unique run identifier from MemoryManager.
     api_key : str, optional
-        Only needed when LLM_BACKEND=anthropic. Ignored for Ollama.
+        Only needed when LLM_BACKEND=anthropic.
     llm_model : str
-        Model name passed to every DynamicAgent.
-        Defaults to gpt-oss:120b-cloud (Ollama backend).
+        Model name. Default: gpt-oss:120b-cloud
     """
 
     def __init__(
@@ -189,10 +191,8 @@ class AgentBuilder:
         self._logger         = PipelineLogger("builder.AgentBuilder")
         self._build_records: List[_BuildRecord] = []
 
-        # Determine active backend
         self._backend = os.environ.get("LLM_BACKEND", "ollama").lower()
 
-        # api_key only matters for Anthropic backend
         self.api_key = ""
         if self._backend == "anthropic":
             self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
@@ -205,12 +205,25 @@ class AgentBuilder:
             f"steps={pipeline_steps}"
         )
 
-        # Only warn about API key when actually using Anthropic
         if self._backend == "anthropic" and not self.api_key:
             self._logger.warning(
-                "LLM_BACKEND=anthropic but ANTHROPIC_API_KEY is not set. "
-                "Agents will fail when executed."
+                "LLM_BACKEND=anthropic but ANTHROPIC_API_KEY is not set."
             )
+
+    def rebuild(self, new_steps: List[str]) -> None:
+        """
+        Update the pipeline step list after DataUnderstandingAgent
+        has determined which steps are actually needed.
+
+        Parameters
+        ----------
+        new_steps : list[str]
+            The adaptive step list computed from data profile.
+        """
+        self._logger.info(
+            f"Rebuilding agent list: {self.pipeline_steps} -> {new_steps}"
+        )
+        self.pipeline_steps = new_steps
 
     # ------------------------------------------------------------------
     # Public API

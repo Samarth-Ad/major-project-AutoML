@@ -243,12 +243,12 @@ def _analyse_data(
 # LLM prompts
 # ---------------------------------------------------------------------------
 
-def _build_decision_prompt(profile: Dict[str, Any]) -> tuple[str, str]:
+def _build_decision_prompt(profile: Dict[str, Any], user_prompt: str = "") -> tuple[str, str]:
     system_prompt = (
-        "You are an autonomous ML architect. Given a dataset profile, decide:\n"
+        "You are an autonomous ML architect. Given a dataset profile and optional user intent, decide:\n"
         "1. Which preprocessing steps are needed (and why)\n"
         "2. Which to skip (and why)\n"
-        "3. Which 3-5 models to try\n"
+        "3. Which 2-3 models to try (be selective to save time)\n"
         "4. Whether hyperparameter tuning is worthwhile\n\n"
         "DECISION RULES:\n"
         "- remove_missing_values  : only if checks.has_nulls = true\n"
@@ -259,6 +259,13 @@ def _build_decision_prompt(profile: Dict[str, Any]) -> tuple[str, str]:
         "- feature_engineering     : include if meaningful numeric interactions possible\n"
         "- dimensionality_reduction: only if checks.needs_pca = true\n"
         "- hyperparameter_tuning   : only if checks.needs_tuning = true\n\n"
+        "MODEL SELECTION RULES (SELECT ONLY 2-3):\n"
+        "- For Regression: xgboost, random_forest, or ridge_classifier (choose the best 2 based on data size/complexity)\n"
+        "- For Classification: xgboost, random_forest, or logistic_regression (choose the best 2 based on data size/complexity)\n"
+        "- ONLY include more than 2 models if specifically requested by user intent.\n\n"
+        "USER INTENT OVERRIDE:\n"
+        "- If the user provides a prompt, prioritize their instructions (e.g., 'Use XGBoost', 'Skip scaling').\n"
+        "- However, do not include steps that are technically impossible (e.g., SMOTE on regression).\n\n"
         "VALID STEPS (use exactly these names):\n"
         "load_dataset, remove_missing_values, handle_class_imbalance,\n"
         "encode_categorical, handle_skewness, normalize_features,\n"
@@ -279,12 +286,16 @@ def _build_decision_prompt(profile: Dict[str, Any]) -> tuple[str, str]:
         '  "reasoning": {"step_name": "one-line reason", ...}\n'
         "}"
     )
-    user_prompt = (
-        "Analyze this dataset profile and decide the optimal pipeline:\n\n"
-        + json.dumps(profile, indent=2, default=str)
+    prompt_content = f"Dataset profile:\n{json.dumps(profile, indent=2, default=str)}"
+    if user_prompt:
+        prompt_content += f"\n\nUser intent/instructions:\n{user_prompt}"
+    
+    user_prompt_str = (
+        "Analyze this dataset profile and user intent to decide the optimal pipeline:\n\n"
+        + prompt_content
         + "\n\nReturn ONLY the JSON decision."
     )
-    return system_prompt, user_prompt
+    return system_prompt, user_prompt_str
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +504,7 @@ class DataUnderstandingAgent:
         self,
         input_data:    Any,
         target_column: str = "",
+        user_prompt:   str = "",
     ) -> tuple[PipelineDecision, Dict[str, Any]]:
         """
         Analyse DataFrame and return (PipelineDecision, result_dict).
@@ -501,6 +513,7 @@ class DataUnderstandingAgent:
         ----------
         input_data    : DataFrame or _ExecutionResult from load_dataset
         target_column : override from CLI/YAML; auto-inferred if empty
+        user_prompt   : natural language intent from user
         """
         task_id    = str(uuid.uuid4())[:8]
         start_time = time.perf_counter()
@@ -534,7 +547,7 @@ class DataUnderstandingAgent:
 
         # ── Pass 2 ────────────────────────────────────────────────────
         self._logger.info("Pass 2: querying LLM for pipeline decision ...")
-        system_prompt, user_prompt = _build_decision_prompt(profile)
+        system_prompt, user_prompt_str = _build_decision_prompt(profile, user_prompt)
 
         try:
             import urllib.request as _urlreq
@@ -550,7 +563,7 @@ class DataUnderstandingAgent:
                     "options": {"temperature": 0.1},
                     "messages": [
                         {"role": "system", "content": system_prompt},
-                        {"role": "user",   "content": user_prompt},
+                        {"role": "user",   "content": user_prompt_str},
                     ],
                 }).encode("utf-8")
                 req = _urlreq.Request(
@@ -568,7 +581,7 @@ class DataUnderstandingAgent:
                     "model":      os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
                     "max_tokens": 2000,
                     "system":     system_prompt,
-                    "messages":   [{"role": "user", "content": user_prompt}],
+                    "messages":   [{"role": "user", "content": user_prompt_str}],
                 }).encode("utf-8")
                 req = _urlreq.Request(
                     "https://api.anthropic.com/v1/messages",

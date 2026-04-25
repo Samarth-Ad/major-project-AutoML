@@ -22,5 +22,9 @@ Usage
     print(result["code_equivalent"]) # exact code that was run
 """
 from agents.base_agent import DynamicAgent, BaseAgent, AgentError, AgentRetryError
+from agents.langchain_wrapper import build_tools, PipelineChain
 
-__all__ = ["DynamicAgent", "BaseAgent", "AgentError", "AgentRetryError"]
+__all__ = [
+    "DynamicAgent", "BaseAgent", "AgentError", "AgentRetryError",
+    "build_tools", "PipelineChain",
+]

@@ -170,6 +170,7 @@ class MasterAgent:
         pipeline_config: Union[str, Path, List[str], Dict] = "config/pipeline.yaml",
         initial_data:    Any = None,
         target_column:   str = "",
+        user_prompt:     str = "",
     ) -> PipelineResult:
         """
         Execute the full adaptive pipeline.
@@ -184,12 +185,16 @@ class MasterAgent:
             Starting data. Pass a CSV filepath or None.
         target_column : str, optional
             Override the target column. Auto-inferred if empty.
+        user_prompt : str, optional
+            Natural language prompt for user intent.
         """
         master_start = time.perf_counter()
 
         self._logger.info("")
         self._logger.info("=" * 60)
         self._logger.info("  ADAPTIVE PIPELINE — EXECUTION STARTING")
+        if user_prompt:
+            self._logger.info(f"  USER PROMPT: {user_prompt}")
         self._logger.info("=" * 60)
 
         # ── Load YAML config ──────────────────────────────────────────
@@ -292,6 +297,7 @@ class MasterAgent:
             decision, understand_result = dua.execute(
                 input_data    = loaded_data,
                 target_column = target_col,
+                user_prompt   = user_prompt,
             )
 
             if understand_result["status"] != "success":
@@ -590,6 +596,7 @@ class MasterAgent:
         return last_result
 
     def _print_final_banner(self, result: PipelineResult) -> None:
+        """Log a success/fail banner at the end of run."""
         status     = "SUCCESS" if result.success else "FAILED"
         successful = result.report.successful_steps
         total      = result.step_count
@@ -607,6 +614,46 @@ class MasterAgent:
             self._logger.info(f"  Models used  : {result.decision.models_to_try}")
         self._logger.info("=" * 60)
         self._logger.info("")
+
+    def get_change_summary(self, old_decision: Optional[PipelineDecision], new_decision: PipelineDecision) -> str:
+        """Compare two pipeline decisions and return a human-readable summary of changes."""
+        if not old_decision:
+            return "Initial pipeline generation."
+        
+        changes = []
+        
+        # 1. Check steps
+        old_steps = set(old_decision.steps)
+        new_steps = set(new_decision.steps)
+        added = new_steps - old_steps
+        removed = old_steps - new_steps
+        
+        if added:
+            changes.append(f"Added steps: {', '.join(added)}")
+        if removed:
+            changes.append(f"Removed steps: {', '.join(removed)}")
+            
+        # 2. Check models
+        old_models = set(old_decision.models_to_try)
+        new_models = set(new_decision.models_to_try)
+        models_added = new_models - old_models
+        models_removed = old_models - new_models
+        
+        if models_added:
+            changes.append(f"Added models: {', '.join(models_added)}")
+        if models_removed:
+            changes.append(f"Removed models: {', '.join(models_removed)}")
+            
+        # 3. Check problem type or target
+        if old_decision.problem_type != new_decision.problem_type:
+            changes.append(f"Problem type changed: {old_decision.problem_type} -> {new_decision.problem_type}")
+        if old_decision.target_column != new_decision.target_column:
+            changes.append(f"Target column changed: {old_decision.target_column} -> {new_decision.target_column}")
+
+        if not changes:
+            return "No structural changes to the pipeline."
+        
+        return "Changes detected:\n  - " + "\n  - ".join(changes)
 
 
 # ---------------------------------------------------------------------------

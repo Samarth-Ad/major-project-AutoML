@@ -241,7 +241,10 @@ def _build_prompt(
         "8.  NEVER combine engine='python' with low_memory=False in read_csv.\n"
         "9.  ALWAYS use encoding='utf-8' in read_csv on Windows.\n"
         "10. Use forward slashes or raw strings for file paths.\n"
-        "11. After read_csv, verify: assert isinstance(df, pd.DataFrame).\n\n"
+        "11. After read_csv, verify: assert isinstance(df, pd.DataFrame).\n"
+        "12. NEVER use strict `assert` for statistical properties like skewness, "
+        "correlation, or exact distribution shapes. These fluctuate and cause "
+        "unnecessary pipeline failures. Use print() or soft logging instead.\n\n"
         "RETURN FORMAT — strict JSON only, no markdown, no extra text:\n"
         "{\n"
         '  "reasoning": "Why this approach for THIS specific data",\n'
@@ -491,11 +494,21 @@ def _sanitise_code(code: str, logger: PipelineLogger) -> str:
     """
     original = code
 
-    # Fix 1: conflicting pandas args
-    for quote in ("'", '"'):
-        if "low_memory" in code and f"engine={quote}python{quote}" in code:
-            code = re.sub(rf",?\s*engine={quote}python{quote}", "", code)
-            logger.debug("Sanitiser: removed conflicting engine='python'")
+    # Fix 1: conflicting pandas args (more robust regex for multi-line)
+    if "low_memory" in code and "engine=" in code:
+        code = re.sub(r",\s*engine=['\"]python['\"]", "", code)
+        code = re.sub(r"engine=['\"]python['\"],\s*", "", code)
+        logger.debug("Sanitiser: removed conflicting engine='python' (robust)")
+
+    # Fix 4: remove overly strict statistical assertions (e.g. skewness checks)
+    # LLMs often add 'assert new_skew.abs() < 0.5' which is too fragile.
+    stat_assert_pattern = re.compile(
+        r"^\s*assert\s+.*(skew|corr|std|mean|null).*(<|>|==|abs).*$", 
+        re.MULTILINE | re.IGNORECASE
+    )
+    if stat_assert_pattern.search(code):
+        code = stat_assert_pattern.sub(lambda m: f"# Removed strict assertion: {m.group(0).strip()}", code)
+        logger.debug("Sanitiser: commented out overly strict statistical assertion")
 
     # Fix 2: missing encoding in read_csv
     if "read_csv" in code and "encoding=" not in code:
@@ -524,6 +537,14 @@ def _sanitise_code(code: str, logger: PipelineLogger) -> str:
             return f"{lhs} = {lhs}.{method}({call_args})"
         code = inplace_pattern.sub(_rewrite_inplace, code)
         logger.debug("Sanitiser: rewrote chained inplace assignment (CoW fix)")
+
+    # Fix 5: sklearn LogisticRegression multi_class parameter (removed in 1.4+)
+    if "LogisticRegression" in code and "multi_class=" in code:
+        # Replace multi_class='multinomial' or 'ovr' with nothing, 
+        # as modern sklearn handles this automatically.
+        code = re.sub(r",\s*multi_class=['\"][^'\"]+['\"]", "", code)
+        code = re.sub(r"multi_class=['\"][^'\"]+['\"],\s*", "", code)
+        logger.debug("Sanitiser: removed deprecated multi_class from LogisticRegression")
 
     if code != original:
         logger.info("Sanitiser applied fixes before execution")

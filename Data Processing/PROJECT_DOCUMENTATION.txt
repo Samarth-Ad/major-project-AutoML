@@ -1,0 +1,649 @@
+================================================================================
+  AGENTIC AutoML PIPELINE BUILDER — COMPLETE PROJECT DOCUMENTATION
+  Generated: 2026-04-25
+================================================================================
+
+TABLE OF CONTENTS
+  1. Project Overview
+  2. Directory Structure
+  3. Technology Stack & Dependencies
+  4. Configuration
+  5. Architecture — How It Works (Input to Output)
+  6. Module-by-Module Breakdown
+  7. Data Flow — Step by Step
+  8. Output Artifacts
+  9. Error Handling & Retry Logic
+  10. How to Run
+  11. LangChain Integration
+  12. Incremental Modification Support
+
+================================================================================
+1. PROJECT OVERVIEW
+================================================================================
+
+This project is a fully autonomous, agentic AutoML system that takes any CSV
+dataset as input and produces four key deliverables:
+
+  1. Cleaned Dataset   (outputs/cleaned_data.csv)
+  2. Trained Model     (outputs/model.pkl)
+  3. Jupyter Notebook   (outputs/pipeline.ipynb)
+  4. Documentation      (outputs/report.md)
+
+The system is "agentic" because it uses a Large Language Model (LLM) to:
+  - Analyze the dataset and understand its characteristics
+  - Decide which preprocessing steps to apply
+  - Write and execute Python code for each step
+  - Select, train, and evaluate ML models
+  - Explain its reasoning at every decision point
+
+No pipeline steps are hardcoded. The system dynamically adapts to any dataset.
+
+================================================================================
+2. DIRECTORY STRUCTURE
+================================================================================
+
+D:\Major Project\Data Processing\
+|
+|-- main.py                          # CLI entry point (595 lines)
+|-- requirements.txt                 # Python dependencies
+|-- .env                             # Environment variables (Ollama URL)
+|-- .gitignore                       # Git ignore rules
+|-- commands                         # Quick-reference commands file
+|
+|-- config/
+|   |-- pipeline.yaml                # Pipeline configuration & thresholds
+|
+|-- agents/                          # Agent implementations
+|   |-- init.py                      # Package exports
+|   |-- base_agent.py                # DynamicAgent — core LLM-powered agent (849 lines)
+|   |-- data_understanding_agent.py  # Data profiler + pipeline planner (645 lines)
+|   |-- documentation_agent.py       # Generates report.md (302 lines)
+|   |-- pipeline_decision.py         # Re-export for PipelineDecision dataclass
+|   |-- langchain_wrapper.py         # LangChain-compatible tool wrappers (NEW)
+|
+|-- builder/
+|   |-- __init__.py
+|   |-- agent_builder.py             # Dynamic agent factory (513 lines)
+|
+|-- orchestrator/
+|   |-- __init__.py
+|   |-- master_agent.py              # Main conductor — two-phase execution (652 lines)
+|   |-- incremental.py               # Change detection & partial re-execution (NEW)
+|
+|-- execution/
+|   |-- __init__.py
+|   |-- scheduler.py                 # Sequential runner with retry logic (534 lines)
+|
+|-- observer/
+|   |-- __init__.py
+|   |-- code_writer_agent.py         # Builds pipeline_script.py incrementally (589 lines)
+|
+|-- memory/
+|   |-- __init__.py
+|   |-- memory_manager.py            # Two-layer memory: RAM + disk (588 lines)
+|
+|-- utils/
+|   |-- __init__.py
+|   |-- logger.py                    # Centralized logging with ANSI colors (274 lines)
+|
+|-- data/
+|   |-- train.csv                    # Input dataset (1.4 MB)
+|
+|-- outputs/                         # Generated outputs
+|   |-- cleaned_data.csv             # Processed dataset
+|   |-- model.pkl                    # Trained model (joblib serialized)
+|   |-- pipeline.ipynb               # Auto-generated Jupyter notebook
+|   |-- report.md                    # Documentation report
+|   |-- processed_data.csv           # Intermediate processed data
+|
+|-- generated_code/
+|   |-- pipeline_script.py           # Reproducible Python script
+|
+|-- memory_store/
+|   |-- agent_outputs.jsonl          # Per-step agent results (audit log)
+|   |-- pipeline_runs.jsonl          # Pipeline run summaries
+|
+|-- logs/
+|   |-- pipeline.log                 # Full execution log
+
+================================================================================
+3. TECHNOLOGY STACK & DEPENDENCIES
+================================================================================
+
+Language:       Python 3.11+
+Environment:    Conda (env name: "automl")
+LLM Backend:    Ollama (local) with model "gpt-oss:120b-cloud"
+                Fallback: Anthropic Claude (via API key)
+
+Core Libraries:
+  - pandas >= 2.2.2          Data manipulation
+  - numpy >= 1.26.4          Numerical operations
+  - scikit-learn >= 1.5.2    ML models, preprocessing, metrics
+  - scipy >= 1.13.1          Statistical functions
+
+ML Models:
+  - xgboost >= 2.0.3         Gradient boosting (XGBoost)
+  - lightgbm >= 4.4.0        Gradient boosting (LightGBM)
+
+Tuning & Balancing:
+  - optuna >= 3.6.1          Hyperparameter optimization
+  - imbalanced-learn >= 0.12 SMOTE and oversampling
+
+Explainability:
+  - shap >= 0.45.1           SHAP feature importance
+  - matplotlib               Plotting
+
+Utilities:
+  - joblib >= 1.4.2          Model serialization
+  - PyYAML >= 6.0.2          YAML config parsing
+  - python-dotenv >= 1.0.1   .env file loading
+
+Optional (LangChain):
+  - langchain-core           If installed, enables native LangChain tools
+  - pydantic                 For structured tool schemas
+
+================================================================================
+4. CONFIGURATION — config/pipeline.yaml
+================================================================================
+
+The YAML config controls runtime behavior without code changes:
+
+  pipeline:
+    name: "Adaptive ML Pipeline"
+    version: "2.0"
+
+  llm:
+    backend: "ollama"               # "ollama" or "anthropic"
+    ollama_model: "gpt-oss:120b-cloud"
+    ollama_base_url: "http://localhost:11434"
+    anthropic_model: "claude-sonnet-4-20250514"
+    max_retries: 3                  # Per-step retry limit
+    abort_on_failure: true          # Stop pipeline on first fatal failure
+
+  thresholds:                       # Controls WHEN each step triggers
+    null_pct_to_trigger_imputation: 0.0     # Any nulls -> impute
+    imbalance_ratio_to_trigger_smote: 0.25  # Minority < 25% -> SMOTE
+    skewness_to_trigger_correction: 1.0     # |skew| > 1.0 -> transform
+    features_to_trigger_pca: 50             # Cols > 50 -> PCA
+    rows_to_trigger_tuning: 500             # Rows > 500 -> hyperparams
+
+Environment Variables (.env):
+  OLLAMA_BASE_URL     = http://localhost:11434/api/generate
+  LLM_BACKEND         = ollama (or anthropic)
+  ANTHROPIC_API_KEY   = (required if using Anthropic)
+
+================================================================================
+5. ARCHITECTURE — HOW IT WORKS (INPUT TO OUTPUT)
+================================================================================
+
+The system follows a TWO-PHASE ADAPTIVE execution model:
+
+  INPUT: Any CSV file (e.g., data/train.csv)
+    |
+    v
+  PHASE 1: BOOTSTRAP (Fixed — always runs)
+    |
+    |-- Step 1: load_dataset
+    |     DynamicAgent reads CSV path, generates pd.read_csv() code
+    |     Output: pandas DataFrame
+    |
+    |-- Step 2: understand_data (DataUnderstandingAgent)
+    |     Pass 1: Pure Python profiling (no LLM)
+    |       - Count nulls, detect types, compute skewness
+    |       - Check class balance, correlation, cardinality
+    |     Pass 2: LLM interpretation
+    |       - LLM receives profile JSON, returns structured pipeline plan
+    |       - Fallback: rule-based decision if LLM fails
+    |     Output: PipelineDecision dataclass
+    |       - steps: ["remove_missing_values", "encode_categorical", ...]
+    |       - models_to_try: ["random_forest", "xgboost", ...]
+    |       - skipped: {"dimensionality_reduction": "not needed"}
+    |       - reasoning: {"step_name": "why this step was included"}
+    |
+    v
+  PHASE 2: ADAPTIVE EXECUTION (Dynamic — steps vary per dataset)
+    |
+    |-- MasterAgent reads PipelineDecision
+    |-- AgentBuilder creates one DynamicAgent per step
+    |-- Scheduler executes agents sequentially
+    |
+    |  For EACH step:
+    |    1. DynamicAgent._inspect_dataframe(df)
+    |       -> Builds rich schema: columns, dtypes, nulls, skew, sample rows
+    |    2. DynamicAgent._call_llm(prompt + schema)
+    |       -> LLM returns: {reasoning, code, validation}
+    |    3. DynamicAgent._sanitise_code(code)
+    |       -> Auto-fixes: pandas CoW, encoding, conflicting args
+    |    4. DynamicAgent._execute_code(code, namespace={df: current_df})
+    |       -> Sandboxed exec(), captures output DataFrame
+    |    5. CodeWriterAgent.observe(result)
+    |       -> Appends step code to pipeline_script.py
+    |    6. MemoryManager.store_and_log_result(step, result)
+    |       -> RAM (ShortTermMemory) + disk (agent_outputs.jsonl)
+    |
+    v
+  POST-PROCESSING:
+    |
+    |-- Save cleaned_data.csv (final DataFrame)
+    |-- Save model.pkl (best trained model via joblib)
+    |-- Convert pipeline_script.py -> pipeline.ipynb (Jupyter notebook)
+    |-- DocumentationAgent generates report.md
+    |
+    v
+  OUTPUT: 4 artifacts in outputs/ directory
+
+================================================================================
+6. MODULE-BY-MODULE BREAKDOWN
+================================================================================
+
+--- main.py (595 lines) ---
+  Role: CLI entry point and orchestration wrapper.
+  What it does:
+    1. Parses CLI arguments (--data, --ollama-model, --dry-run, --steps)
+    2. Validates LLM connectivity (pings Ollama server)
+    3. Creates MasterAgent and calls .run(data_path)
+    4. Post-processes: saves CSV, model, generates notebook
+    5. Calls DocumentationAgent to produce report.md
+  Key functions:
+    - _check_ollama_ready(): Verifies Ollama server is running
+    - _save_outputs(result): Saves CSV + model to outputs/
+    - _generate_notebook(script_path): Converts .py to .ipynb
+    - main(): Argument parser + full execution flow
+
+--- agents/base_agent.py (849 lines) ---
+  Role: The universal agent that handles ANY pipeline step.
+  Class: DynamicAgent
+  What it does:
+    1. Receives a step_name (e.g., "remove_missing_values")
+    2. Inspects the current DataFrame (schema, stats, nulls, skew)
+    3. Builds a prompt with the schema + step instructions
+    4. Calls the LLM (Ollama or Anthropic) to generate Python code
+    5. Sanitizes the code (fixes common pandas issues)
+    6. Executes the code in a sandboxed namespace
+    7. Returns result dict: {output_data, reasoning, code_equivalent, status}
+  Key functions:
+    - execute(input_data) -> dict: Main entry point
+    - _inspect_dataframe(df) -> dict: Rich schema extraction
+    - _build_prompt(schema, step) -> str: LLM prompt construction
+    - _call_llm(prompt) -> dict: Routes to Ollama or Anthropic
+    - _parse_llm_response(text) -> dict: Extracts code + reasoning
+    - _sanitise_code(code) -> str: Auto-fixes bad patterns
+    - _execute_code(code, namespace) -> Any: Sandboxed exec()
+  Code Sanitizer fixes:
+    - Removes engine='python' + low_memory conflicts
+    - Adds encoding='utf-8' to read_csv on Windows
+    - Rewrites chained inplace assignments for pandas CoW
+
+--- agents/data_understanding_agent.py (645 lines) ---
+  Role: Analyzes data and decides which pipeline steps to run.
+  Class: DataUnderstandingAgent
+  What it does:
+    Pass 1 (Pure Python — no LLM):
+      - Counts rows, columns, null values
+      - Identifies numeric vs categorical columns
+      - Computes skewness for each numeric column
+      - Checks class balance (minority ratio)
+      - Detects high-correlation pairs
+      - Estimates post-encoding column count
+    Pass 2 (LLM-assisted):
+      - Sends profile JSON to LLM
+      - LLM returns structured pipeline plan
+      - If LLM fails, falls back to rule-based decision
+  Output: PipelineDecision dataclass containing:
+    - problem_type: "binary_classification" | "multiclass_classification" | "regression"
+    - target_column: auto-inferred or user-specified
+    - steps: ordered list of step names to execute
+    - models_to_try: list of model names
+    - skipped: dict of {step: reason} for excluded steps
+    - reasoning: dict of {step: justification}
+  Threshold checks (from config/pipeline.yaml):
+    - has_nulls: total_nulls > 0 -> "remove_missing_values"
+    - needs_smote: minority_ratio < 0.25 -> "handle_class_imbalance"
+    - has_categoricals: any object/category cols -> "encode_categorical"
+    - needs_skewness: any |skew| > 1.0 -> "handle_skewness"
+    - needs_scaling: max_range/min_range > 10 -> "normalize_features"
+    - needs_feat_eng: >= 2 numeric cols -> "feature_engineering"
+    - needs_pca: estimated_cols > 50 -> "dimensionality_reduction"
+
+--- agents/documentation_agent.py (302 lines) ---
+  Role: Generates the final report.md after pipeline completion.
+  Class: DocumentationAgent
+  Sections generated:
+    1. Header (status, pipeline ID, elapsed time)
+    2. Dataset Analysis (rows, cols, nulls, imbalance)
+    3. Pipeline Decisions (steps included/skipped with reasons)
+    4. Step Execution Details (per-step status, timing, attempts)
+    5. Model Selection & Validation (problem type, models, rationale)
+    6. Output Files (paths to all generated artifacts)
+    7. Architecture Diagram (ASCII art system diagram)
+
+--- builder/agent_builder.py (513 lines) ---
+  Role: Factory that creates DynamicAgent instances for any step name.
+  Class: AgentBuilder
+  What it does:
+    - Maintains a registry of known step names
+    - Supports step aliasing (e.g., "normalize" -> "normalize_features")
+    - Validates step names before creating agents
+    - Creates DynamicAgent with correct pipeline context
+    - Tracks build times and produces build logs
+    - Can rebuild agent list when pipeline steps change mid-run
+  Key method:
+    - build_agents(step_list) -> list[DynamicAgent]
+    - rebuild(new_steps): Recreates agents for modified pipeline
+
+--- orchestrator/master_agent.py (652 lines) ---
+  Role: The main conductor that manages the entire pipeline lifecycle.
+  Class: MasterAgent
+  What it does:
+    Phase 1 (Bootstrap):
+      1. Initialize MemoryManager
+      2. Create AgentBuilder with bootstrap steps
+      3. Build and run load_dataset agent
+      4. Run DataUnderstandingAgent -> PipelineDecision
+    Phase 2 (Adaptive):
+      5. Read PipelineDecision.steps
+      6. Rebuild AgentBuilder with adaptive steps
+      7. Build all agents
+      8. Initialize CodeWriterAgent
+      9. Create Scheduler and execute all steps
+      10. Finalize script and return PipelineResult
+  Returns: PipelineResult dataclass with:
+    - success, pipeline_id, total_elapsed_s
+    - decision (PipelineDecision)
+    - report (ExecutionReport from Scheduler)
+    - step_results (dict of all agent outputs)
+
+--- orchestrator/incremental.py (NEW — change detection) ---
+  Role: Enables incremental pipeline modification.
+  Classes: IncrementalRunner, _ChangeDetector, _StepCache
+  What it does:
+    - First run: executes full pipeline, caches all step outputs
+    - Subsequent runs: detects what changed, re-executes only affected steps
+    - Change types supported:
+      * add_step / remove_step
+      * change_model (swap model list)
+      * change_threshold (adjust triggers)
+      * change_target (different target column)
+    - Finds "invalidation point" — earliest changed step
+    - Reuses cached outputs for all steps before that point
+    - Re-executes from invalidation point onward
+
+--- execution/scheduler.py (534 lines) ---
+  Role: Sequentially executes agents with retry and error handling.
+  Class: Scheduler
+  What it does:
+    1. Iterates through agent list in order
+    2. For each agent: calls execute(current_data)
+    3. On success: passes output to next agent
+    4. On failure: retries with exponential backoff
+       - Wait time: 2^attempt seconds (2s, 4s, 8s)
+       - Max retries: 3 (configurable)
+    5. On abort: stops pipeline, marks remaining steps as skipped
+    6. Produces ExecutionReport with per-step outcomes
+    7. Notifies CodeWriterAgent after each step
+    8. Updates MemoryManager after each step
+
+--- observer/code_writer_agent.py (589 lines) ---
+  Role: Passive observer that builds a reproducible Python script.
+  Class: CodeWriterAgent
+  What it does:
+    - Called after every step completes (observe(result))
+    - Extracts code_equivalent from agent result
+    - Parses and deduplicates import statements
+    - Strips imports from code body (moved to top)
+    - Writes annotated step blocks with reasoning comments
+    - Handles failed steps with error placeholders
+    - Adds save-outputs code and execution summary footer
+  Output: generated_code/pipeline_script.py
+
+--- memory/memory_manager.py (588 lines) ---
+  Role: Two-layer state management system.
+  Layer 1 — ShortTermMemory (RAM):
+    - Pipeline ID, step list, current step index
+    - Per-step status (pending/running/success/failed)
+    - Retry counters
+    - Current DataFrame flowing between agents
+    - Step results (full agent output dicts)
+  Layer 2 — LongTermMemory (disk):
+    - agent_outputs.jsonl: one JSON record per agent execution
+    - pipeline_runs.jsonl: one record per pipeline run summary
+    - JSON-safe serialization (DataFrames -> shape/col summaries)
+  Combined — MemoryManager:
+    - Facade exposing unified API
+    - store_and_log_result(): saves to both layers in one call
+    - Thread-safe with threading.Lock on all writes
+
+--- utils/logger.py (274 lines) ---
+  Role: Centralized logging with console colors and file output.
+  Features:
+    - ANSI color-coded console output (green=INFO, red=ERROR, etc.)
+    - Plain-text file handler (logs/pipeline.log)
+    - Safe Unicode handling for Windows consoles
+    - Semantic methods: step_start, step_end, agent_event, retry, error
+
+================================================================================
+7. DATA FLOW — STEP BY STEP (Example: train.csv)
+================================================================================
+
+Input: data/train.csv (20,640 rows x 10 columns)
+  Columns: longitude, latitude, housing_median_age, total_rooms,
+           total_bedrooms, population, households, median_income,
+           median_house_value, ocean_proximity
+
+Step 1: load_dataset
+  Input:  CSV file path string
+  Action: LLM generates pd.read_csv() code
+  Output: DataFrame(20640 x 10), 207 null values
+
+Step 2: understand_data (DataUnderstandingAgent)
+  Input:  DataFrame(20640 x 10)
+  Analysis:
+    - Problem type: multiclass_classification
+    - Target column: ocean_proximity (auto-inferred, 5 classes)
+    - Nulls: 207 (in total_bedrooms)
+    - Imbalanced: Yes (ISLAND class has only 5 rows = 0.02%)
+    - Skewed columns: total_rooms, total_bedrooms, population,
+                      households, median_income
+  Decision:
+    INCLUDE: remove_missing_values, handle_class_imbalance,
+             encode_categorical, handle_skewness, normalize_features,
+             feature_engineering, select_and_train_models,
+             evaluate_models, select_best_model, explain_model
+    SKIP:    dimensionality_reduction (only 10 cols, needs_pca=false)
+    MODELS:  random_forest, xgboost, lightgbm, logistic_regression, svm
+
+Step 3: remove_missing_values
+  Input:  DataFrame(20640 x 10), 207 nulls
+  LLM Reasoning: "Only total_bedrooms has nulls (1%). Median imputation
+                  preserves dataset size and is robust to skewness."
+  Action: df['total_bedrooms'].fillna(median)
+  Output: DataFrame(20640 x 10), 0 nulls
+
+Step 4: handle_class_imbalance
+  Input:  DataFrame(20640 x 10), 0 nulls
+  LLM Reasoning: "ISLAND has only 5 rows (0.02%). Apply SMOTE with
+                  label-encoded target, sampling_strategy='not majority'."
+  Action: SMOTE oversampling of minority classes
+  Output: DataFrame(45680 x 10), balanced classes
+
+Step 5: encode_categorical
+  Input:  DataFrame(45680 x 10)
+  LLM Reasoning: "ocean_proximity has 5 categories (low cardinality).
+                  One-Hot Encoding preserves info without ordinal bias."
+  Action: pd.get_dummies(df, columns=['ocean_proximity'])
+  Output: DataFrame(45680 x 14), all numeric
+
+Steps 6-10: (normalize, feature_engineering, train, evaluate, explain)
+  These steps follow the same pattern: inspect -> LLM code -> execute
+
+Post-processing:
+  - cleaned_data.csv saved (45680 x 14)
+  - pipeline_script.py converted to pipeline.ipynb
+  - report.md generated by DocumentationAgent
+
+================================================================================
+8. OUTPUT ARTIFACTS
+================================================================================
+
+1. outputs/cleaned_data.csv
+   - Final processed DataFrame
+   - All nulls removed, classes balanced, features encoded
+   - Ready for direct model training
+
+2. outputs/model.pkl
+   - Best-performing model serialized with joblib
+   - Can be loaded: model = joblib.load("outputs/model.pkl")
+
+3. outputs/pipeline.ipynb
+   - Jupyter notebook auto-generated from pipeline_script.py
+   - Contains: import cell, per-step code cells with reasoning
+   - Opens with: jupyter notebook outputs/pipeline.ipynb
+
+4. outputs/report.md
+   - Markdown documentation with:
+     - Pipeline status and timing
+     - Dataset analysis summary
+     - Pipeline decisions with justifications
+     - Per-step execution details
+     - Model selection rationale
+     - Output file listing
+     - System architecture diagram
+
+5. generated_code/pipeline_script.py
+   - Complete, runnable Python script
+   - Reproduces the entire pipeline from scratch
+   - Each step annotated with LLM reasoning
+
+6. memory_store/agent_outputs.jsonl
+   - Full audit trail of every agent execution
+   - One JSON record per step per run
+
+7. memory_store/pipeline_runs.jsonl
+   - Summary of every pipeline run
+   - Steps, statuses, timing, success/failure
+
+8. logs/pipeline.log
+   - Complete execution log with timestamps
+
+================================================================================
+9. ERROR HANDLING & RETRY LOGIC
+================================================================================
+
+The system has 5 layers of protection:
+
+Layer 1: Code Sanitizer (base_agent._sanitise_code)
+  - Removes conflicting pandas args (engine='python' + low_memory)
+  - Adds encoding='utf-8' to read_csv on Windows
+  - Rewrites chained inplace assignments for pandas 2.x CoW
+
+Layer 2: Sandboxed Execution (base_agent._execute_code)
+  - exec() in isolated namespace with try/catch
+  - Only df and standard libraries available
+  - Captures tracebacks for debugging
+
+Layer 3: Agent Retry (scheduler._run_step_with_retries)
+  - Exponential backoff: wait = 2^attempt seconds
+  - Max 3 retries per step (configurable)
+  - Each retry gets fresh LLM call (may generate different code)
+
+Layer 4: Pipeline Abort (scheduler.run)
+  - abort_on_failure=true: stops on first unrecoverable failure
+  - abort_on_failure=false: marks step failed, continues pipeline
+
+Layer 5: LLM Fallback (data_understanding_agent)
+  - If LLM fails to return valid pipeline plan
+  - Falls back to pure Python rule-based decision
+  - Ensures pipeline always has a valid step list
+
+================================================================================
+10. HOW TO RUN
+================================================================================
+
+Prerequisites:
+  1. conda activate automl
+  2. Ollama running: ollama serve
+  3. Model available: ollama run gpt-oss:120b-cloud
+  4. pip install -r requirements.txt
+
+Basic run:
+  python main.py --data .\data\train.csv
+
+With custom model:
+  python main.py --data .\data\train.csv --ollama-model gpt-oss:120b-cloud
+
+Dry run (validate config without executing):
+  python main.py --dry-run
+
+Manual step list (bypass adaptive logic):
+  python main.py --steps load_dataset remove_missing_values train_model
+
+CLI Arguments:
+  --data PATH          Path to input CSV file
+  --ollama-model NAME  Override Ollama model name
+  --dry-run            Validate configuration only
+  --steps STEP1 STEP2  Manual step list (overrides adaptive mode)
+
+================================================================================
+11. LANGCHAIN INTEGRATION (agents/langchain_wrapper.py)
+================================================================================
+
+The LangChain wrapper exposes pipeline steps as LangChain-compatible tools:
+
+  from agents.langchain_wrapper import build_tools, PipelineChain
+
+  # Individual tools
+  tools = build_tools(["remove_missing_values", "encode_categorical"])
+  result = tools[0].invoke({"df": my_dataframe})
+
+  # Full pipeline as a chain
+  chain = PipelineChain(csv_path="data/train.csv")
+  output = chain.invoke({"objective": "classify survival"})
+
+Works with or without langchain installed:
+  - If langchain-core is installed: creates real BaseTool subclasses
+  - If not: uses duck-typed _ToolShim with same .invoke() API
+
+Mapping to LangChain concepts:
+  DynamicAgent.execute()  ->  Tool / BaseTool
+  MasterAgent.run()       ->  AgentExecutor
+  MemoryManager           ->  ConversationBufferMemory
+  Scheduler               ->  Custom Chain with retry
+  AgentBuilder             ->  ToolFactory pattern
+  PipelineDecision         ->  PydanticOutputParser
+
+================================================================================
+12. INCREMENTAL MODIFICATION SUPPORT (orchestrator/incremental.py)
+================================================================================
+
+The IncrementalRunner enables partial re-execution after changes:
+
+  from orchestrator.incremental import IncrementalRunner
+
+  runner = IncrementalRunner(csv_path="data/train.csv")
+
+  # First run — executes everything
+  result1 = runner.run()
+
+  # Change model — only re-trains, reuses preprocessing cache
+  result2 = runner.modify({"models_to_try": ["xgboost", "lightgbm"]})
+
+  # Add SMOTE — re-executes from handle_class_imbalance onward
+  result3 = runner.modify({"add_step": "handle_class_imbalance"})
+
+Supported changes:
+  "add_step": "step_name"              # Insert a new step
+  "remove_step": "step_name"           # Remove a step
+  "models_to_try": ["xgb", "lgbm"]    # Change model selection
+  "target_column": "new_target"        # Change target (invalidates all)
+  "thresholds": {"key": value}         # Adjust trigger thresholds
+
+How it works:
+  1. Caches output DataFrame after each step
+  2. On modification, detects which step is first affected
+  3. Reuses cached outputs for all steps BEFORE that point
+  4. Re-executes only from the invalidation point onward
+  5. Reports efficiency (% of steps reused)
+
+================================================================================
+  END OF DOCUMENTATION
+================================================================================

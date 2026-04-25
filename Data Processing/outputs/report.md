@@ -2,18 +2,18 @@
 
 | Property | Value |
 |----------|-------|
-| **Status** | ❌ FAILED |
-| **Pipeline ID** | `6450509b` |
-| **Total Time** | 265.11s |
-| **Steps Completed** | 6/10 |
-| **Generated At** | 2026-03-24 16:21:02 UTC |
+| **Status** | ✅ SUCCESS |
+| **Pipeline ID** | `776c2d8e` |
+| **Total Time** | 80.21s |
+| **Steps Completed** | 4/4 |
+| **Generated At** | 2026-04-25 11:38:36 UTC |
 
 ## 1. Dataset Analysis
 
 | Property | Value |
 |----------|-------|
-| **Problem Type** | multiclass_classification |
-| **Target Column** | `ocean_proximity` |
+| **Problem Type** |  |
+| **Target Column** | `` |
 | **Rows** | ? |
 | **Columns** | ? |
 | **Numeric Features** | ? |
@@ -25,43 +25,37 @@
 
 | # | Step | Justification |
 |---|------|---------------|
-| 1 | `load_dataset` | Load raw data into memory. |
-| 2 | `remove_missing_values` | Nulls present (1% in total_bedrooms) need imputation/removal. |
-| 3 | `handle_class_imbalance` | Target classes are imbalanced; SMOTE required per checks. |
-| 4 | `encode_categorical` | One categorical feature (ocean_proximity) needs encoding. |
-| 5 | `handle_skewness` | Several numeric columns are highly skewed; transformation needed. |
-| 6 | `feature_engineering` | Correlated numeric features suggest interaction or ratio features could improve model. |
-| 7 | `normalize_features` | Logistic regression and SVM require feature scaling. |
-| 8 | `select_and_train_models` | Train candidate models. |
-| 9 | `evaluate_models` | Assess performance on validation set. |
-| 10 | `select_best_model` | Choose model with highest multiclass metric. |
-| 11 | `explain_model` | Provide interpretability for final model. |
+| 1 | `load_dataset` | Data-driven decision |
+| 2 | `select_and_train_models` | Proceed to model training after loading data |
+| 3 | `evaluate_models` | Standard evaluation after training |
+| 4 | `select_best_model` | Choose best model from training results |
+| 5 | `explain_model` | Provide model explanations |
 
 ### Steps Skipped
 
 | Step | Reason |
 |------|--------|
-| `dimensionality_reduction` | PCA not required per checks |
+| `remove_missing_values` | checks.has_nulls is false |
+| `handle_class_imbalance` | checks.needs_smote is false or problem type unknown |
+| `encode_categorical` | checks.has_categoricals is false |
+| `handle_skewness` | checks.needs_skewness is false |
+| `normalize_features` | no scaling needed and model choice unknown |
+| `feature_engineering` | checks.needs_feat_eng is false |
+| `dimensionality_reduction` | checks.needs_pca is false |
 
 ## 3. Step Execution Details
 | # | Step | Status | Time | Attempts |
 |---|------|--------|------|----------|
-| 1 | `remove_missing_values` | ✅ success | 9.92s | 1 |
-| 2 | `handle_class_imbalance` | ✅ success | 13.02s | 1 |
-| 3 | `encode_categorical` | ✅ success | 10.79s | 1 |
-| 4 | `handle_skewness` | ✅ success | 28.51s | 2 |
-| 5 | `feature_engineering` | ✅ success | 27.42s | 1 |
-| 6 | `normalize_features` | ✅ success | 19.98s | 1 |
-| 7 | `select_and_train_models` | ❌ failed | 128.45s | 4 |
-| 8 | `evaluate_models` | ⏭️ skipped | 0.00s | 0 |
-| 9 | `select_best_model` | ⏭️ skipped | 0.00s | 0 |
-| 10 | `explain_model` | ⏭️ skipped | 0.00s | 0 |
+| 1 | `select_and_train_models` | ✅ success | 9.58s | 1 |
+| 2 | `evaluate_models` | ✅ success | 16.25s | 1 |
+| 3 | `select_best_model` | ✅ success | 15.99s | 1 |
+| 4 | `explain_model` | ✅ success | 14.84s | 1 |
 
 ## 4. Model Selection & Validation
-**Problem type:** multiclass_classification
+**Problem type:** 
 
 
-**Selection rationale:** Models were selected based on the dataset characteristics (multiclass_classification task). Tree-based models (Random Forest, XGBoost, LightGBM) were preferred for their robustness. Linear models were included as baselines.
+**Selection rationale:** Models were selected based on the dataset characteristics ( task). Tree-based models (Random Forest, XGBoost, LightGBM) were preferred for their robustness. Linear models were included as baselines.
 
 ## 5. Output Files
 
@@ -125,4 +119,4 @@ CSV Input
 
 ---
 
-*Report generated automatically by the Agentic AutoML Pipeline (Pipeline ID: `6450509b`)*
+*Report generated automatically by the Agentic AutoML Pipeline (Pipeline ID: `776c2d8e`)*

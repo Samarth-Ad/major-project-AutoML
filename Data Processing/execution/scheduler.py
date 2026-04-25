@@ -454,13 +454,13 @@ class Scheduler:
             if status in ("retry", "failed"):
                 if attempt <= self.max_retries:
                     self._logger.warning(
-                        f"💥  Step '{step_name}' failed: "
+                        f"!!  Step '{step_name}' failed: "
                         f"{result.get('error', 'unknown error')}"
                     )
                     continue
                 # retries exhausted
                 self._logger.error(
-                    f"💥  Step '{step_name}' failed: "
+                    f"!!  Step '{step_name}' failed: "
                     f"{result.get('error', 'unknown error')}"
                 )
                 break

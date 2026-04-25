@@ -484,7 +484,7 @@ class CodeWriterAgent:
 
         step_summary_lines = ""
         for rec in self._step_records:
-            icon = "✔" if rec.status == "success" else "✘"
+            icon = "[OK]" if rec.status == "success" else "[X]"
             step_summary_lines += (
                 f"#   {icon}  {rec.step_index}. {rec.step_name:<35} "
                 f"{rec.elapsed_ms/1000:.3f}s\n"

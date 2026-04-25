@@ -579,7 +579,7 @@ class MemoryManager:
         print()
         statuses = snap.get("step_statuses", {})
         for step in snap.get("steps", []):
-            icon = {"pending": "○", "running": "◉", "success": "✔", "failed": "✘"}.get(
+            icon = {"pending": "[ ]", "running": "[..]", "success": "[OK]", "failed": "[X]"}.get(
                 statuses.get(step, "pending"), "?"
             )
             retries = snap.get("retry_counts", {}).get(step, 0)

@@ -60,6 +60,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config",       type=str, default="config/pipeline.yaml")
     parser.add_argument("--steps",        nargs="+", default=None)
     parser.add_argument("--data",         type=str, default=None)
+    parser.add_argument("--prompt",       type=str, default=None)
+    parser.add_argument("--interactive",  action="store_true", default=False)
     parser.add_argument("--backend",      type=str, default=None, choices=["ollama","anthropic"])
     parser.add_argument("--ollama-model", type=str, default=None)
     parser.add_argument("--ollama-url",   type=str, default=None)
@@ -81,7 +83,7 @@ def _configure_llm_backend(args: argparse.Namespace) -> None:
     config_path = Path(args.config)
     if config_path.exists():
         try:
-            with config_path.open() as f:
+            with config_path.open(encoding="utf-8") as f:
                 cfg = _yaml.safe_load(f) or {}
             yaml_llm = cfg.get("llm", {})
         except Exception:
@@ -458,16 +460,22 @@ def _print_summary(result, saved_paths: dict, nb_path: str) -> None:
 
     if "processed_csv" in saved_paths:
         p  = Path(saved_paths["processed_csv"])
-        df = pd.read_csv(p, encoding="utf-8")
-        print(f"  [CSV]      {p}")
-        print(f"             {df.shape[0]} rows x {df.shape[1]} columns")
-        print(f"             Columns: {list(df.columns)}")
+        if p.exists() and p.stat().st_size > 0:
+            try:
+                df = pd.read_csv(p, encoding="utf-8")
+                print(f"  [CSV]      {p}")
+                print(f"             {df.shape[0]} rows x {df.shape[1]} columns")
+                print(f"             Columns: {list(df.columns)}")
+            except Exception:
+                print(f"  [CSV]      {p} (Could not read)")
+        else:
+            print(f"  [CSV]      {p} (Empty or not found)")
 
     if "trained_model" in saved_paths:
         print(f"  [MODEL]    {saved_paths['trained_model']}")
 
     if "metrics" in saved_paths:
-        with open(saved_paths["metrics"]) as f:
+        with open(saved_paths["metrics"], encoding="utf-8") as f:
             m = json.load(f)
         print(f"  [METRICS]  {saved_paths['metrics']}")
         for k, v in m.items():
@@ -475,7 +483,7 @@ def _print_summary(result, saved_paths: dict, nb_path: str) -> None:
                 print(f"             {k:<18}: {v}")
 
     if "comparison" in saved_paths:
-        comp = pd.read_csv(saved_paths["comparison"])
+        comp = pd.read_csv(saved_paths["comparison"], encoding="utf-8")
         print(f"  [COMPARISON] {saved_paths['comparison']}")
         print(comp.to_string(index=False))
 
@@ -529,60 +537,99 @@ def run_pipeline(args: argparse.Namespace) -> int:
 
     if args.dry_run:
         res = master.dry_run(config_path)
-        return 0 if res["valid"] else 1
+        if not args.interactive:
+            return 0 if res["valid"] else 1
+        # If interactive + dry_run, we fall through to the loop for testing purposes
 
-    initial_data = None
-    if args.data:
-        data_path = Path(args.data)
-        if not data_path.exists():
-            _logger.error(f"Data file not found: {data_path}")
+    current_prompt = args.prompt
+    last_success   = True
+
+    while True:
+        initial_data = None
+        if args.data:
+            data_path = Path(args.data)
+            if not data_path.exists():
+                _logger.error(f"Data file not found: {data_path}")
+                return 1
+            initial_data = str(data_path)
+
+        # pipeline_source: steps list (legacy) or config path (adaptive)
+        pipeline_config = args.steps if args.steps else config_path
+
+        # Execute pipeline
+        try:
+            result = master.run(
+                pipeline_config = pipeline_config,
+                initial_data    = initial_data,
+                target_column   = target_column,
+                user_prompt     = current_prompt,
+            )
+            last_success = result.success
+        except ValueError as exc:
+            _logger.error(f"Config error: {exc}")
             return 1
-        initial_data = str(data_path)
+        except KeyboardInterrupt:
+            _logger.warning("Interrupted by user.")
+            break
+        except Exception as exc:
+            _logger.error(f"Unexpected error: {exc}", exc=exc)
+            if not args.interactive:
+                return 1
+            input("Press Enter to retry or Ctrl+C to exit...")
+            continue
 
-    # pipeline_source: steps list (legacy) or config path (adaptive)
-    if args.steps:
-        config_path = args.steps   # pass list directly → legacy mode
+        # ── Save outputs ──────────────────────────────────────────────────
+        saved_paths = _save_outputs(result)
 
-    # Execute pipeline
-    try:
-        result = master.run(
-            pipeline_config = config_path if not args.steps else args.steps,
-            initial_data    = initial_data,
-            target_column   = target_column,
-        )
-    except ValueError as exc:
-        _logger.error(f"Config error: {exc}")
-        return 1
-    except KeyboardInterrupt:
-        _logger.warning("Interrupted by user.")
-        return 1
-    except Exception as exc:
-        _logger.error(f"Unexpected error: {exc}", exc=exc)
-        return 1
+        # ── Generate notebook ─────────────────────────────────────────────
+        try:
+            nb_path = _generate_notebook(result, saved_paths)
+        except Exception as exc:
+            _logger.warning(f"Notebook generation failed: {exc}")
+            nb_path = ""
 
-    # ── Save outputs ──────────────────────────────────────────────────
-    saved_paths = _save_outputs(result)
+        # ── Generate documentation report ─────────────────────────────────
+        try:
+            from agents.documentation_agent import DocumentationAgent
+            doc_agent = DocumentationAgent()
+            report_path = doc_agent.generate_report(result, saved_paths)
+            saved_paths["report"] = report_path
+        except Exception as exc:
+            _logger.warning(f"Report generation failed: {exc}")
 
-    # ── Generate notebook ─────────────────────────────────────────────
-    try:
-        nb_path = _generate_notebook(result, saved_paths)
-    except Exception as exc:
-        _logger.warning(f"Notebook generation failed: {exc}")
-        nb_path = ""
+        # ── Print plain summary ───────────────────────────────────────────
+        _print_summary(result, saved_paths, nb_path)
 
-    # ── Generate documentation report ─────────────────────────────────
-    try:
-        from agents.documentation_agent import DocumentationAgent
-        doc_agent = DocumentationAgent()
-        report_path = doc_agent.generate_report(result, saved_paths)
-        saved_paths["report"] = report_path
-    except Exception as exc:
-        _logger.warning(f"Report generation failed: {exc}")
+        if not args.interactive:
+            break
 
-    # ── Print plain summary ───────────────────────────────────────────
-    _print_summary(result, saved_paths, nb_path)
+        # ── Interactive Loop ─────────────────────────────────────────────
+        print("\n" + "="*60)
+        print(" INTERACTIVE MODE — Provide feedback or dataset changes")
+        print("="*60)
+        print("Options:")
+        print("  - Type a new prompt to refine the pipeline (e.g., 'Use XGBoost instead')")
+        print("  - Type 'edit' to modify the dataset (e.g., 'edit outputs/cleaned_data.csv')")
+        print("  - Type 'exit' or 'quit' to finish")
+        
+        user_input = input("\nNext action > ").strip()
+        
+        if user_input.lower() in ["exit", "quit"]:
+            break
+        
+        if user_input.lower().startswith("edit"):
+            parts = user_input.split(maxsplit=1)
+            file_to_edit = parts[1] if len(parts) > 1 else "outputs/cleaned_data.csv"
+            _logger.info(f"Opening {file_to_edit} for manual changes...")
+            input(f"Please edit {file_to_edit} manually and press Enter to continue...")
+            args.data = file_to_edit
+            continue
 
-    return 0 if result.success else 1
+        # Otherwise, treat input as a new prompt
+        current_prompt = user_input
+        _logger.info(f"Updating pipeline with new prompt: {current_prompt}")
+
+    return 0 if last_success else 1
 
 
 def main() -> None:

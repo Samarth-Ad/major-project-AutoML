@@ -186,7 +186,7 @@ class PipelineLogger:
     def step_start(self, step_name: str, task_id: str) -> None:
         """Log that a pipeline step is beginning execution."""
         self._log.info(
-            f"{_Colours.STEP}▶  STEP START{_Colours.RESET} "
+            f"{_Colours.STEP}>>  STEP START{_Colours.RESET} "
             f"[{task_id}] {step_name}"
         )
 
@@ -199,59 +199,59 @@ class PipelineLogger:
     ) -> None:
         """Log that a pipeline step has finished."""
         timing = f"  ({elapsed_ms:.1f} ms)" if elapsed_ms is not None else ""
-        icon = "✔" if status == "success" else "✘"
+        icon = "[OK]" if status == "success" else "[X]"
         level = logging.INFO if status == "success" else logging.ERROR
         self._log.log(
             level,
             f"{_Colours.STEP}{icon}  STEP END  {_Colours.RESET} "
-            f"[{task_id}] {step_name} → {status.upper()}{timing}",
+            f"[{task_id}] {step_name} -> {status.upper()}{timing}",
         )
 
     def agent_event(self, agent_name: str, message: str) -> None:
         """General agent lifecycle event."""
         self._log.debug(
-            f"{_Colours.AGENT}⚙  AGENT     {_Colours.RESET} "
+            f"{_Colours.AGENT}?  AGENT      {_Colours.RESET} "
             f"[{agent_name}] {message}"
         )
 
     def code_written(self, step_name: str, lines: int) -> None:
         """Log that CodeWriterAgent has appended code to the script."""
         self._log.info(
-            f"{_Colours.CODE}✎  CODE      {_Colours.RESET} "
+            f"{_Colours.CODE}*  CODE      {_Colours.RESET} "
             f"Appended {lines} line(s) for step '{step_name}'"
         )
 
     def pipeline_start(self, steps: list[str]) -> None:
         """Log the start of the full pipeline."""
         self._log.info(
-            f"{_Colours.BOLD}{'─' * 60}{_Colours.RESET}\n"
-            f"  🚀  Pipeline starting — {len(steps)} step(s): "
-            f"{' → '.join(steps)}\n"
-            f"{_Colours.BOLD}{'─' * 60}{_Colours.RESET}"
+            f"{_Colours.BOLD}{'-' * 60}{_Colours.RESET}\n"
+            f"  >>  Pipeline starting -- {len(steps)} step(s): "
+            f"{' -> '.join(steps)}\n"
+            f"{_Colours.BOLD}{'-' * 60}{_Colours.RESET}"
         )
 
     def pipeline_end(self, success: bool, elapsed_s: float) -> None:
         """Log the completion of the full pipeline."""
-        status_str = "COMPLETED ✔" if success else "FAILED ✘"
+        status_str = "COMPLETED [OK]" if success else "FAILED [X]"
         self._log.info(
-            f"{_Colours.BOLD}{'─' * 60}{_Colours.RESET}\n"
-            f"  🏁  Pipeline {status_str}  "
+            f"{_Colours.BOLD}{'-' * 60}{_Colours.RESET}\n"
+            f"  ==  Pipeline {status_str}  "
             f"(total: {elapsed_s:.2f}s)\n"
-            f"{_Colours.BOLD}{'─' * 60}{_Colours.RESET}"
+            f"{_Colours.BOLD}{'-' * 60}{_Colours.RESET}"
         )
 
     def retry(self, step_name: str, attempt: int, max_attempts: int) -> None:
         """Log a retry attempt for a failed step."""
         self._log.warning(
-            f"🔄  RETRY  [{step_name}]  attempt {attempt}/{max_attempts}"
+            f">>  RETRY  [{step_name}]  attempt {attempt}/{max_attempts}"
         )
 
     def error(self, message: str, exc: Optional[Exception] = None) -> None:
         """Log an error, optionally with exception details."""
         if exc:
-            self._log.error(f"💥  {message}", exc_info=exc)
+            self._log.error(f"!!  {message}", exc_info=exc)
         else:
-            self._log.error(f"💥  {message}")
+            self._log.error(f"!!  {message}")
 
     def info(self, message: str) -> None:
         """Passthrough info log."""

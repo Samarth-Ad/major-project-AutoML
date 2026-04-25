@@ -421,12 +421,12 @@ class AgentBuilder:
             print("  (no agents built yet)")
         for rec in self._build_records:
             alias_note = (
-                f"  [alias: {rec.step_name} → {rec.canonical_name}]"
+                f"  [alias: {rec.step_name} -> {rec.canonical_name}]"
                 if rec.step_name != rec.canonical_name
                 else ""
             )
             print(
-                f"  ✔  {rec.canonical_name:<40} "
+                f"  [OK]  {rec.canonical_name:<40} "
                 f"{rec.build_time_ms:.2f}ms{alias_note}"
             )
         print("=" * 60 + "\n")

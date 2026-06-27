@@ -1,4 +1,33 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(/c/Users/Samarth_Ad/AppData/Local/Programs/Python/Python312/python.exe -c \"import sklearn, scipy; print\\('sklearn', sklearn.__version__, 'scipy', scipy.__version__\\)\")",
+      "Bash(ls /c/Users/Samarth_Ad/AppData/Local/Programs/Python/Python312/*.exe)",
+      "PowerShell(Get-Command uv -ErrorAction SilentlyContinue)",
+      "Bash(.venv/Scripts/pip.exe install *)",
+      "Bash(.venv/Scripts/python.exe -m pip install tabulate)",
+      "PowerShell(.venv\\\\Scripts\\\\python.exe -m ensurepip --upgrade 2>&1 | Select-Object -Last 5)",
+      "PowerShell(.venv\\\\Scripts\\\\python.exe -m pip install tabulate 2>&1 | Select-Object -Last 5)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_conditions.py -v)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/ -v)",
+      "Bash(.venv/Scripts/python.exe -c ' *)",
+      "Bash(.venv/Scripts/python.exe -c \"import sys; print\\(sys.executable\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"import openml, scipy, requests, sklearn; print\\('openml', openml.__version__\\); print\\('scipy', scipy.__version__\\); print\\('requests', requests.__version__\\); print\\('sklearn', sklearn.__version__\\)\")",
+      "Bash(.venv/Scripts/python.exe *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:11434/api/tags)",
+      "Bash(curl -s http://localhost:11434/api/tags)",
+      "Bash(where.exe ollama *)",
+      "Bash(ollama --version)",
+      "Bash(ollama serve *)",
+      "Bash(curl -s -X POST http://localhost:11434/api/generate -H \"Content-Type: application/json\" -d '{\"model\":\"qwen3-coder:480b-cloud\",\"prompt\":\"print 1+1\",\"stream\":false,\"options\":{\"seed\":42}}')",
+      "Bash(tee logs/dry_run/diabetes_b2.log)",
+      "Bash(.venv/Scripts/python.exe scripts/dry_run.py --dataset-id 37 --condition b0_naive --model qwen3-coder:480b-cloud --max-iter 3)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(python -m py_compile scripts/run_sweep.py)",
+      "Bash(python *)",
+      "Bash(PYTHONIOENCODING=utf-8 python *)"
+    ]
+  },
   "enabledPlugins": {
     "everything-claude-code@everything-claude-code": true,
     "claude-code-setup@claude-plugins-official": true

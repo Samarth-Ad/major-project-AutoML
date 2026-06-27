@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Experiment outputs
+results/
+logs/
+data/experiments/
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

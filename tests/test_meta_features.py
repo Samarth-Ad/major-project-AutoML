@@ -1,5 +1,4 @@
 import math
-from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -7,14 +6,10 @@ import pytest
 from src.contracts import MetaFeatures, TaskType
 from src.meta_features.extractor import extract
 
-# titanic_survival.csv is the standard 891-row Titanic train set
-_TITANIC_CSV = Path(__file__).parent.parent / "Data Processing" / "data" / "titanic_survival.csv"
-
 
 @pytest.fixture(scope="module")
-def titanic_meta() -> MetaFeatures:
-    df = pd.read_csv(_TITANIC_CSV)
-    return extract(df, target_col="Survived", dataset_id="titanic", task_type=TaskType.BINARY_CLASSIFICATION)
+def titanic_meta(titanic_df: pd.DataFrame) -> MetaFeatures:
+    return extract(titanic_df, target_col="Survived", dataset_id="titanic", task_type=TaskType.BINARY_CLASSIFICATION)
 
 
 def test_is_valid_instance(titanic_meta: MetaFeatures) -> None:

@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pandas as pd
 import pytest
 
@@ -9,14 +7,8 @@ from src.conditions.b2_metafeature import B2MetaFeatureGuided
 from src.contracts import MetaFeatures, TaskType
 from src.meta_features.extractor import extract
 
-_TITANIC_CSV = Path(__file__).parent.parent / "Data Processing" / "data" / "titanic_survival.csv"
 _TASK = "Build a binary classifier on the supplied tabular data and report held-out balanced accuracy."
 _TARGET = "Survived"
-
-
-@pytest.fixture(scope="module")
-def titanic_df() -> pd.DataFrame:
-    return pd.read_csv(_TITANIC_CSV)
 
 
 @pytest.fixture(scope="module")

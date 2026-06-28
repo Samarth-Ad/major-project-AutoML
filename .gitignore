@@ -1,24 +1,30 @@
 # Python
 __pycache__/
-*.py[cod]
-*$py.class
+*.pyc
+*.pyo
 *.egg-info/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-
-# Virtual envs
 .venv/
 venv/
-env/
+.uv/
 
-# Experiment outputs
+# Data (downloaded by scripts)
+data/
+*.csv
+
+# Runtime outputs
 results/
 logs/
-data/experiments/
+output.txt
 
-# Editor/OS
+# IDE
 .vscode/
 .idea/
+*.swp
+
+# OS
 .DS_Store
 Thumbs.db
+
+# uv artifacts
+uv.lock
+.python-version

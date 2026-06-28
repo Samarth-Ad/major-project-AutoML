@@ -28,7 +28,14 @@
       "Bash(PYTHONIOENCODING=utf-8 python *)",
       "Bash(git log *)",
       "Bash(git ls-tree *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git rm *)",
+      "Bash(grep -E \"\\(__pycache__|\\\\.pyc$|\\\\.venv|venv/|data/|logs/|results/|Data Processing/\\)\")",
+      "Bash(grep -E \"\\\\.csv$\")",
+      "Bash(grep -E \"__pycache__|\\\\.pyc$\")",
+      "Bash(xargs -I {} git rm --cached \"{}\")",
+      "Bash(grep -E \"\\(__pycache__|\\\\.pyc$|\\\\.csv$|\\\\.venv|\\\\.python-version|uv\\\\.lock\\)\")"
     ]
   },
   "enabledPlugins": {

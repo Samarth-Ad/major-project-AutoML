@@ -7,91 +7,100 @@ This project investigates whether injecting computed dataset meta-features (dist
 ## Prerequisites
 
 - Python 3.11+
-- [Ollama](https://ollama.com/) with cloud inference access (for LLM calls)
+- [Ollama](https://ollama.com/) with cloud inference access
 - ~2 GB free disk space for cached datasets
 
-## Setup
+## Quick Start
 
-```bash
+**Step 1.** Clone the repo.
+
+```
 git clone https://github.com/Samarth-Ad/major-project-AutoML.git
 cd major-project-AutoML
+```
 
+**Step 2.** Create a virtual environment.
+
+```
 python -m venv .venv
-# Windows (PowerShell):
-.venv\Scripts\Activate.ps1
-# Linux / macOS:
-source .venv/bin/activate
+```
 
+**Step 3.** Activate it.
+
+On Windows (PowerShell):
+
+```
+.venv\Scripts\Activate.ps1
+```
+
+On Linux / macOS:
+
+```
+source .venv/bin/activate
+```
+
+**Step 4.** Install dependencies.
+
+```
+pip install --upgrade pip setuptools
+```
+
+```
 pip install -e .
 ```
 
-## Download Datasets
+**Step 5.** Download the OpenML CC18 datasets (one-time, ~2 GB).
 
-```bash
+```
 python scripts/run_sweep.py --precache
 ```
 
-Downloads and caches all 28 OpenML datasets locally under `data/experiments/`.
+**Step 6.** Verify the install.
 
-## Run Tests
-
-```bash
+```
 python -m pytest tests/ -v
 ```
 
-27 unit tests should pass.
+All 27 tests should pass.
 
-## Dry Run (single dataset, single condition)
+## Usage
 
-```bash
-python scripts/dry_run.py --dataset-id 37 --condition b2_metafeature --model "qwen3-coder:480b-cloud"
+### Dry Run
+
+Run a single `(dataset, condition, model)` cell end-to-end. Use this for prompt tuning and diagnosis.
+
+```
+python scripts/dry_run.py --dataset-id 37 --condition b2_metafeature --model "ministral-3:14b-cloud"
 ```
 
-Use this for prompt tuning and human diagnosis. The script loads one dataset, builds the prompt for the chosen condition, calls Ollama, runs the generated pipeline in a subprocess, and reports the outcome with stdout/stderr tails.
+Flags:
 
-## Full Sweep
+- `--dataset-id` — OpenML dataset id (e.g. `37` = diabetes)
+- `--condition` — one of `b0_naive`, `b1_schema`, `b2_metafeature`
+- `--model` — Ollama model tag
+- `--prompt-only` — print the assembled prompt and exit without calling the LLM
 
-```bash
-python scripts/run_sweep.py \
-  --models "qwen3-coder:480b-cloud,gpt-oss:120b-cloud,ministral-3:14b-cloud" \
-  --seeds "42,43,44" \
-  --output results/sweep_results.jsonl
+### Full Sweep
+
+Run the full experiment across all datasets × conditions × models × seeds.
+
+```
+python scripts/run_sweep.py --models "ministral-3:14b-cloud" --seeds "42,43,44" --output results/sweep_results.jsonl
 ```
 
-The sweep is resume-safe — rerunning skips already-completed `(dataset, condition, model, seed)` cells already present in the output JSONL.
+The sweep is **resume-safe** — rerunning skips `(dataset, condition, model, seed)` cells already present in the output JSONL.
 
 ## Project Structure
 
 ```
-Major-Project/
-├─ src/
-│  ├─ contracts.py            # Shared dataclasses (TaskType, GeneratedPipeline, …)
-│  ├─ strategic_lm.py         # LLM call wrappers / strategy helpers
-│  ├─ meta_features/          # Dataset meta-feature extraction
-│  │   ├─ simple.py           #   shape, dtype counts, class balance
-│  │   ├─ distributional.py   #   skewness, kurtosis, moments
-│  │   ├─ information.py      #   entropy, mutual information
-│  │   ├─ landmarking.py      #   decision-stump score, simple-learner baselines
-│  │   └─ extractor.py        #   aggregator / unified extract() API
-│  ├─ conditions/             # Prompting conditions
-│  │   ├─ base.py             #   PromptCondition interface
-│  │   ├─ b0_naive.py         #   B0 — task description only
-│  │   ├─ b1_schema.py        #   B1 — task + column schema
-│  │   └─ b2_metafeature.py   #   B2 — task + schema + meta-features
-│  ├─ execution/              # Subprocess-isolated pipeline execution
-│  │   ├─ runner.py           #   execute_pipeline() in a fresh interpreter
-│  │   ├─ error_taxonomy.py   #   classify_error() — syntax / import / shape / timeout / …
-│  │   └─ metrics.py          #   extract_score() from generated pipeline stdout
-│  └─ experiments/            # Orchestration and analysis
-│      ├─ datasets.py         #   OpenML loaders + SELECTED_CLASSIFICATION registry
-│      ├─ runner.py           #   call_llm() and single-cell experiment runner
-│      └─ analysis.py         #   Summary tables, error breakdowns, stats
-├─ scripts/
-│  ├─ dry_run.py              # Single (dataset, condition, model) diagnostic run
-│  └─ run_sweep.py            # Full dataset x condition x model x seed sweep
-├─ tests/                     # 27 unit tests
-├─ pyproject.toml
-└─ README.md
+src/
+├─ meta_features/   Dataset meta-feature extraction (simple, distributional, information, landmarking)
+├─ conditions/      Prompting conditions (B0 naive, B1 schema, B2 meta-feature-guided)
+├─ execution/       Subprocess-isolated pipeline execution and error taxonomy
+└─ experiments/     Dataset loading, LLM orchestration, statistical analysis
+
+scripts/             CLI entry points (dry_run, run_sweep)
+tests/               Unit tests (27 total)
 ```
 
 ## Research Questions

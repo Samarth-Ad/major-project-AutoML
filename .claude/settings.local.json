@@ -25,7 +25,10 @@
       "Bash(echo \"EXIT=$?\")",
       "Bash(python -m py_compile scripts/run_sweep.py)",
       "Bash(python *)",
-      "Bash(PYTHONIOENCODING=utf-8 python *)"
+      "Bash(PYTHONIOENCODING=utf-8 python *)",
+      "Bash(git log *)",
+      "Bash(git ls-tree *)",
+      "Bash(git add *)"
     ]
   },
   "enabledPlugins": {

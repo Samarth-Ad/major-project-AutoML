@@ -51,9 +51,10 @@ from src.execution.runner import execute_pipeline
 from src.experiments.datasets import (
     SELECTED_CLASSIFICATION,
     build_task_description,
+    load_custom_dataset,
     load_dataset,
 )
-from src.experiments.runner import call_llm
+from src.experiments.runner import build_error_feedback, call_llm
 from src.meta_features.extractor import extract as extract_meta
 
 _CONDITION_MAP: dict[str, type[PromptCondition]] = {
@@ -103,6 +104,25 @@ def _parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Comma-separated OpenML ids. Defaults to all 28 from SELECTED_CLASSIFICATION.",
+    )
+    parser.add_argument(
+        "--csv-path",
+        type=str,
+        default=None,
+        help="Path to a custom CSV file (runs sweep on this single dataset instead of OpenML).",
+    )
+    parser.add_argument(
+        "--target-col",
+        type=str,
+        default=None,
+        help="Target column name (required when using --csv-path).",
+    )
+    parser.add_argument(
+        "--task-type",
+        type=str,
+        default=None,
+        choices=["binary_classification", "multiclass_classification", "regression"],
+        help="Task type for custom CSV (auto-detected if omitted).",
     )
     parser.add_argument(
         "--output",
@@ -168,7 +188,7 @@ def _load_completed_keys(path: Path) -> set[tuple[int, str, str, int]]:
                     (
                         int(rec["dataset_id"]),
                         str(rec["condition"]),
-                        str(rec["model"]),
+                        str(rec.get("llm_backend", rec.get("model", ""))),
                         int(rec["seed"]),
                     )
                 )
@@ -247,27 +267,27 @@ def _run_cell_with_refinement(
 
         final_error_category = result.error_category
         final_error_message = result.error_message
-        current_prompt = (
-            base_prompt
-            + "\n\n## Previous Attempt Failure\n"
-            + f"The previous attempt failed: {final_error_category}: "
-            + f"{_tail(final_error_message or '', 5)}\n"
-            + "Generate corrected code that addresses this specific error."
+        current_prompt = base_prompt + build_error_feedback(
+            error_message=f"{final_error_category}: {_tail(final_error_message or '', 5)}",
+            error_category=final_error_category,
+            prev_code=code,
         )
 
     wall = time.monotonic() - cell_start
+    success = best_score is not None
     return {
         "dataset_id": dataset_id,
         "dataset_name": dataset_name,
-        "condition": condition_key,
-        "model": model,
+        "condition": condition.condition_name,
+        "llm_backend": model,
         "seed": seed,
-        "score": best_score,
+        "success": success,
+        "test_score": best_score,
+        "error_category": final_error_category if not success else None,
+        "error_message": final_error_message if not success else None,
         "iterations_used": iterations_used,
         "max_iterations": max_iter,
-        "error_category": final_error_category if best_score is None else None,
-        "error_message": final_error_message if best_score is None else None,
-        "wall_time_seconds": round(wall, 2),
+        "runtime_seconds": round(wall, 2),
         "timestamp": datetime.now().isoformat(timespec="seconds"),
     }
 
@@ -309,16 +329,16 @@ def _format_progress(
     total: int,
     record: dict[str, Any],
 ) -> str:
-    score = record["score"]
+    score = record["test_score"]
     if score is None:
         outcome = f"FAILED:{record['error_category']}"
     else:
         outcome = f"{score:.4f}"
     return (
         f"[{completed:>3}/{total}] {record['dataset_name']} | "
-        f"{record['condition']} | {record['model']} | seed={record['seed']} | "
+        f"{record['condition']} | {record['llm_backend']} | seed={record['seed']} | "
         f"iter={record['iterations_used']}/{record['max_iterations']} | "
-        f"{record['wall_time_seconds']:.1f}s -> {outcome}"
+        f"{record['runtime_seconds']:.1f}s -> {outcome}"
     )
 
 
@@ -357,14 +377,15 @@ def _make_infra_record(
         "dataset_id": ds_id,
         "dataset_name": dataset_name,
         "condition": condition_key,
-        "model": model,
+        "llm_backend": model,
         "seed": seed,
-        "score": None,
-        "iterations_used": 0,
-        "max_iterations": max_iter,
+        "success": False,
+        "test_score": None,
         "error_category": "infrastructure",
         "error_message": message,
-        "wall_time_seconds": round(time.monotonic() - cell_started, 2),
+        "iterations_used": 0,
+        "max_iterations": max_iter,
+        "runtime_seconds": round(time.monotonic() - cell_started, 2),
         "timestamp": datetime.now().isoformat(timespec="seconds"),
     }
 
@@ -378,9 +399,13 @@ def _run_sweep(
     max_iter: int,
     timeout: int,
     resume: bool,
+    custom_dataset_info: dict[str, Any] | None = None,
 ) -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     completed_keys = _load_completed_keys(output_path) if resume else set()
+
+    if custom_dataset_info is not None:
+        dataset_ids = [custom_dataset_info["dataset_id"]]
 
     total = len(dataset_ids) * len(models) * len(condition_keys) * len(seeds)
     to_run = total - len(completed_keys)
@@ -416,15 +441,18 @@ def _run_sweep(
         # Dataset-outermost so a long sweep yields complete per-dataset rows
         # early, which lets downstream analysis start before the run finishes.
         for ds_id in dataset_ids:
-            try:
-                dataset_info = load_dataset(ds_id, seed=42)
-            except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "Failed to load dataset %d: %s -- skipping its cells.",
-                    ds_id,
-                    exc,
-                )
-                continue
+            if custom_dataset_info is not None:
+                dataset_info = custom_dataset_info
+            else:
+                try:
+                    dataset_info = load_dataset(ds_id, seed=42)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(
+                        "Failed to load dataset %d: %s -- skipping its cells.",
+                        ds_id,
+                        exc,
+                    )
+                    continue
 
             for model in models:
                 for condition_key in condition_keys:
@@ -474,8 +502,8 @@ def _run_sweep(
                         fout.flush()
 
                         completed_this_session += 1
-                        wall_total += record["wall_time_seconds"]
-                        if record["score"] is not None:
+                        wall_total += record["runtime_seconds"]
+                        if record["test_score"] is not None:
                             successes_this_session += 1
                         logger.info(
                             _format_progress(completed_this_session, to_run, record)
@@ -547,6 +575,16 @@ def main() -> int:
     if args.precache:
         return _precache_datasets(dataset_ids)
 
+    custom_dataset_info = None
+    if args.csv_path:
+        if not args.target_col:
+            logger.error("--target-col is required when using --csv-path")
+            return 2
+        custom_dataset_info = load_custom_dataset(
+            args.csv_path, args.target_col,
+            task_type=args.task_type, seed=seeds[0],
+        )
+
     return _run_sweep(
         dataset_ids=dataset_ids,
         models=models,
@@ -556,6 +594,7 @@ def main() -> int:
         max_iter=args.max_iter,
         timeout=args.timeout,
         resume=not args.no_resume,
+        custom_dataset_info=custom_dataset_info,
     )
 
 

@@ -3,21 +3,20 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "major-project"
-version = "0.1.0"
+name = "major-project-automl"
+version = "0.2.0"
+description = "Research CLI and experiment sweeps for meta-feature-guided LLM AutoML. Depends on automl-reusables."
 requires-python = ">=3.11"
 dependencies = [
-    "pydantic>=2.0",
-    "pandas",
-    "numpy",
-    "scikit-learn",
-    "scipy",
-    "tabulate",
-    "requests",
-    "openml",
+    "automl-reusables",
     "pytest",
 ]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = []
+exclude = ["src*", "tests*", "scripts*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

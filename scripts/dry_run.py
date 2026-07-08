@@ -26,11 +26,11 @@ from src.conditions.b0_naive import B0Naive
 from src.conditions.b1_schema import B1Schema
 from src.conditions.b2_metafeature import B2MetaFeatureGuided
 from src.conditions.base import PromptCondition
-from src.contracts import TaskType
+from src.contracts import ErrorCategory, TaskType
 from src.execution.error_taxonomy import classify_error
 from src.execution.metrics import extract_score
-from src.experiments.datasets import build_task_description, load_dataset
-from src.experiments.runner import call_llm
+from src.experiments.datasets import build_task_description, load_custom_dataset, load_dataset
+from src.experiments.runner import build_error_feedback, call_llm
 from src.meta_features.extractor import extract as extract_meta
 
 _CONDITION_MAP: dict[str, type[PromptCondition]] = {
@@ -57,6 +57,19 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--dataset-id", type=int, default=37, help="OpenML dataset id (default: 37, diabetes)."
+    )
+    parser.add_argument(
+        "--csv-path", type=str, default=None,
+        help="Path to a custom CSV file (overrides --dataset-id).",
+    )
+    parser.add_argument(
+        "--target-col", type=str, default=None,
+        help="Target column name (required when using --csv-path).",
+    )
+    parser.add_argument(
+        "--task-type", type=str, default=None,
+        choices=["binary_classification", "multiclass_classification", "regression"],
+        help="Task type (auto-detected if omitted).",
     )
     parser.add_argument("--model", type=str, default="llama3.3:70b", help="Ollama model tag.")
     parser.add_argument(
@@ -140,14 +153,25 @@ def _run_code_subprocess(code: str, prefix: str, timeout: int = 600) -> tuple[in
 def main() -> int:
     args = _parse_args()
 
-    dataset_info = load_dataset(args.dataset_id, seed=args.seed)
+    if args.csv_path:
+        if not args.target_col:
+            print("ERROR: --target-col is required when using --csv-path")
+            return 2
+        dataset_info = load_custom_dataset(
+            args.csv_path, args.target_col, task_type=args.task_type, seed=args.seed,
+        )
+    else:
+        dataset_info = load_dataset(args.dataset_id, seed=args.seed)
     df_train = dataset_info["df_train"]
     df_test = dataset_info["df_test"]
     task_type: TaskType = dataset_info["task_type"]
     target_col: str = dataset_info["target_col"]
     dataset_name: str = dataset_info["dataset_name"]
 
-    print(f"Dataset:     {dataset_name} (OpenML #{args.dataset_id})")
+    if args.csv_path:
+        print(f"Dataset:     {dataset_name} (custom CSV: {args.csv_path})")
+    else:
+        print(f"Dataset:     {dataset_name} (OpenML #{args.dataset_id})")
     print(f"Train shape: {df_train.shape}")
     print(f"Test shape:  {df_test.shape}")
     print(f"Target col:  {target_col}")
@@ -222,26 +246,28 @@ def main() -> int:
 
         if returncode != 0:
             category, message = classify_error(stderr, returncode)
-            final_error = f"{category.value}: {message}"
-            print(f"FAIL {category.value}: {message}")
+            error_category = category.value
+            final_error = f"{error_category}: {message}"
+            print(f"FAIL {error_category}: {message}")
         else:
+            error_category = ErrorCategory.RUNTIME_OTHER.value
             final_error = "runtime_other: pipeline ran but did not print a valid SCORE line"
             print(f"FAIL {final_error}")
 
-        current_prompt = (
-            base_prompt
-            + "\n\n## Previous Attempt Failure\n"
-            + f"The previous attempt failed: {final_error}\n"
-            + "Last lines of stderr:\n"
-            + _tail(stderr, 10)
-            + "\nGenerate corrected code that addresses this specific error."
+        current_prompt = base_prompt + build_error_feedback(
+            error_message=final_error + "\n\nLast lines of stderr:\n" + _tail(stderr, 10),
+            error_category=error_category,
+            prev_code=code,
         )
 
     print()
     print("=" * 70)
     print("SUMMARY")
     print("=" * 70)
-    print(f"Dataset:          {dataset_name} (OpenML #{args.dataset_id})")
+    if args.csv_path:
+        print(f"Dataset:          {dataset_name} (custom CSV)")
+    else:
+        print(f"Dataset:          {dataset_name} (OpenML #{args.dataset_id})")
     print(f"Condition:        {condition.condition_name} ({args.condition})")
     print(f"Model:            {args.model}")
     print(f"Best score:       {best_score if best_score is not None else 'FAILED'}")

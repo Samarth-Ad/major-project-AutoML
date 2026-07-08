@@ -4,6 +4,7 @@ from src.contracts import ErrorCategory, GeneratedPipeline, TaskType
 from src.execution.error_taxonomy import classify_error
 from src.execution.metrics import extract_score
 from src.execution.runner import execute_pipeline
+from src.experiments.runner import build_error_feedback
 
 
 def _pipeline(code: str) -> GeneratedPipeline:
@@ -82,3 +83,46 @@ def test_execute_timeout() -> None:
     assert result.success is False
     assert result.error_category == "timeout"
     assert result.runtime_seconds < 5
+
+
+def test_classify_missing_name() -> None:
+    stderr = (
+        "Traceback (most recent call last):\n"
+        '  File "test.py", line 10, in <module>\n'
+        "    scaler = RobustScaler()\n"
+        "NameError: name 'RobustScaler' is not defined"
+    )
+    category, message = classify_error(stderr, 1)
+    assert category == ErrorCategory.MISSING_NAME
+    assert "RobustScaler" in message
+
+
+def test_execute_missing_name() -> None:
+    result = execute_pipeline(
+        _pipeline("x = RobustScaler()"),
+        TaskType.BINARY_CLASSIFICATION,
+        timeout_seconds=10,
+    )
+    assert result.success is False
+    assert result.error_category == "missing_name"
+
+
+def test_build_error_feedback_basic() -> None:
+    feedback = build_error_feedback("some error happened")
+    assert "some error happened" in feedback
+    assert "self-contained" in feedback
+
+
+def test_build_error_feedback_includes_code() -> None:
+    feedback = build_error_feedback("err", prev_code="import os\nprint('hi')")
+    assert "import os" in feedback
+    assert "code that failed" in feedback
+
+
+def test_build_error_feedback_missing_name_hint() -> None:
+    feedback = build_error_feedback(
+        "NameError: name 'RobustScaler' is not defined",
+        error_category="missing_name",
+    )
+    assert "import statement" in feedback
+    assert "RobustScaler" in feedback

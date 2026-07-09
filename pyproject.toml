@@ -8,7 +8,7 @@ version = "0.2.0"
 description = "Research CLI and experiment sweeps for meta-feature-guided LLM AutoML. Depends on automl-reusables."
 requires-python = ">=3.11"
 dependencies = [
-    "automl-reusables",
+    "automl-reusables @ git+https://github.com/Major-Proj-AutoML/automl-reusables.git@main",
     "pytest",
 ]
 

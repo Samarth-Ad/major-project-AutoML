@@ -64,6 +64,30 @@ def test_execute_success() -> None:
     assert result.error_category is None
 
 
+def test_execute_flags_suspicious_leakage() -> None:
+    result = execute_pipeline(
+        _pipeline('print("SCORE: 1.0")'),
+        TaskType.BINARY_CLASSIFICATION,
+        timeout_seconds=10,
+    )
+    assert result.success is False
+    assert result.error_category == "suspicious_leakage"
+    assert result.test_score == 1.0
+    assert "0.995" in (result.error_message or "")
+
+
+def test_execute_regression_high_score_not_flagged() -> None:
+    # Regression scores are neg-RMSE (unbounded negative); the leakage
+    # threshold does not apply.
+    result = execute_pipeline(
+        _pipeline('print("SCORE: -0.001")'),
+        TaskType.REGRESSION,
+        timeout_seconds=10,
+    )
+    assert result.success is True
+    assert result.test_score == -0.001
+
+
 def test_execute_syntax_error() -> None:
     result = execute_pipeline(
         _pipeline("def f(\n"),

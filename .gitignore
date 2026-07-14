@@ -15,6 +15,9 @@ data/
 results/
 logs/
 output.txt
+artifacts/
+graphify-out/
+*.log
 
 # IDE
 .vscode/

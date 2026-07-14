@@ -90,6 +90,36 @@ python scripts/run_sweep.py --models "ministral-3:14b-cloud" --seeds "42,43,44" 
 
 The sweep is **resume-safe** — rerunning skips `(dataset, condition, model, seed)` cells already present in the output JSONL.
 
+### Post-Hoc Artifact Reconstruction
+
+The sweep records LLM-generated pipeline scripts to `logs/runs/*.py` and per-run scores to `results/*.jsonl`, but does not persist fitted models or rule-mapping justifications. Three offline scripts rebuild those artifacts from the sweep outputs — no additional LLM calls.
+
+**Step 1.** Match each successful JSONL row to its generating script.
+
+```
+python scripts/match_scripts.py
+```
+
+Writes `results/script_manifest.csv`. Rows are matched by `(dataset_name, condition, seed)` and disambiguated across re-runs by picking the candidate whose file mtime is closest to the row's `timestamp`.
+
+**Step 2.** Refit each script and dump the fitted estimator locally.
+
+```
+python scripts/refit_and_save.py
+```
+
+For every manifest row, creates `artifacts/{model_slug}/{dataset_name}/{condition}/seed{N}/` containing `pipeline.py` (verbatim copy) and `pipeline.joblib` (fitted estimator). Uses `scripts/_save_wrapper.py` in a 300 s-capped subprocess. Failures write `refit_error.txt` in the same folder; the truncated joblib is removed so the tree stays consistent.
+
+The wrapper captures the estimator two ways: name-lookup in the script's module globals (spec order: `pipeline, pipe, model, clf, estimator, final_model`, plus observed `clf_pipeline, model_pipeline, full_pipeline, clf_pipe, model_pipe, full_pipe, grid_search`), with a depth-tracked `sklearn` `fit` hook as fallback for scripts that bind the estimator inside a function.
+
+**Step 3.** Generate per-cell rule justifications (planned).
+
+```
+python scripts/justify.py
+```
+
+Parses each `artifacts/**/pipeline.py` with `ast`, maps detected sklearn classes onto the 14 B2 meta-feature rules, and writes `JUSTIFICATION.md` next to each pipeline. Surfaces how often the LLM actually followed B2 guidance.
+
 ## Project Structure
 
 ```
@@ -99,8 +129,18 @@ src/
 ├─ execution/       Subprocess-isolated pipeline execution and error taxonomy
 └─ experiments/     Dataset loading, LLM orchestration, statistical analysis
 
-scripts/             CLI entry points (dry_run, run_sweep)
-tests/               Unit tests (27 total)
+scripts/
+├─ dry_run.py           Single-cell sweep for prompt tuning
+├─ run_sweep.py         Full experimental sweep
+├─ match_scripts.py     Phase 1: JSONL row → LLM script (writes results/script_manifest.csv)
+├─ refit_and_save.py    Phase 2: refit each script → artifacts/**/pipeline.joblib
+├─ _save_wrapper.py     Subprocess entrypoint used by refit_and_save.py
+└─ justify.py           Phase 3: parse each pipeline → JUSTIFICATION.md (planned)
+
+results/                Sweep JSONL outputs and derived manifests (gitignored)
+logs/runs/              LLM-generated pipeline scripts, one per attempt (gitignored)
+artifacts/              Refitted pipelines: pipeline.py + pipeline.joblib per cell (gitignored)
+tests/                  Unit tests (27 total)
 ```
 
 ## Research Questions

@@ -26,7 +26,8 @@ Three prompting conditions:
 - **RQ1** — does B2 outperform B0/B1 on predictive accuracy?
 - **RQ2** — does B2 reduce code-generation failures?
 - **RQ3** — does B2 need fewer LLM retries to converge?
-- **RQ4** — how does the effect vary across LLM backends?
+- ~~**RQ4** — how does the effect vary across LLM backends?~~ *(dropped 2026-07-15;
+  corpus is single-backend — see STATUS_README §6.4)*
 - **RQ5** — does the effect vary by dataset size (small/medium/large)?
 
 **Novel contribution added in session 2:** a mechanical verification system that separates *faithfulness* (does the code match the LLM's claimed reasoning?) from *correctness* (does the pipeline generalize?). Empirically confirmed these are orthogonal — the LLM can produce a fully faithful trace whose pipeline still collapses to baseline.

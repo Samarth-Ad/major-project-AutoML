@@ -148,7 +148,7 @@ tests/                  Unit tests (27 total)
 - **RQ1.** Does meta-feature-guided prompting (B2) produce higher predictive performance than schema-only (B1) or naive (B0) prompting across heterogeneous tabular datasets?
 - **RQ2.** Does the inclusion of meta-features reduce the rate of code-generation failures (syntax errors, import errors, shape mismatches, timeouts)?
 - **RQ3.** Does meta-feature guidance shorten the iterative refinement loop — i.e., produce a working pipeline in fewer LLM calls?
-- **RQ4.** How does the effect of meta-feature guidance vary across LLM backends of different sizes and capabilities?
+- ~~**RQ4.** How does the effect of meta-feature guidance vary across LLM backends of different sizes and capabilities?~~ *(dropped; corpus is single-backend as of 2026-07-15 — see `STATUS_README.md` §6.4)*
 - **RQ5.** Are the gains from meta-feature guidance consistent across small / medium / large datasets, or are they concentrated in a specific size or difficulty regime?
 
 ## License

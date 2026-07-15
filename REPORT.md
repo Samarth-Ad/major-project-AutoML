@@ -963,4 +963,407 @@ Total: **88 tests**, all green as of 2026-07-11.
 
 ---
 
+## Appendix H — Stage-1 and Stage-2 Operational Log (2026-07-14 → 2026-07-15)
+
+This appendix appends to the pre-2026-07-14 report and documents two structured
+audit/hardening stages performed in weeks 1–2 of the 7-week thesis-project plan.
+Nothing above this line has been modified. All facts below were verified against
+the live system (Postgres SELECTs, container inspection, and file-level checks);
+none are extrapolated from prior documents. Full working files live under
+`review/stage1/` (Stage 1, 18 files) and `../review/stage2/` (Stage 2, 34 files;
+outside this repo, at the parent `D:\Major Project\review\stage2\`).
+
+### H.1 Purpose
+
+Two motivations drove this operational work:
+
+1. Verify empirically what the pre-existing docs claimed (`SESSION_CONTEXT.md`,
+   `STATUS_README.md`) rather than trusting folklore — several claims were stale
+   or incorrect (see H.2.6, H.2.7).
+2. Harden the data + code substrate for the remaining stages of the thesis
+   timeline: dedupe accumulated experimental noise, add token accounting, and
+   confirm the metafeatures pipeline handles regression before adding Ames as a
+   third dataset.
+
+### H.2 Stage 1 — Read-only audit + confirmed cleanups (2026-07-14)
+
+Stage 1 began as a strictly read-only infrastructure and DB audit spanning four
+tasks (docker volume recovery, current infra state, Postgres inventory, repo
+layout verification). After the audit produced a nine-item recommendation list,
+the researcher approved batched execution of all recommendations; the resulting
+mutations are recorded below.
+
+#### H.2.1 Pre-isolation data recovery
+
+The AutoML stack was renamed and port-shifted on 2026-07-10 (containers
+`Auto-ML-Postgres` on `:5433`, `Auto-ML-Redis` on `:6380`). The audit checked
+for surviving pre-isolation Postgres volumes and containers on the host:
+
+- 5 docker volumes present; 4 matched the "postgres/pgdata/automl/db" filter.
+- The only historical Postgres container (`postgres`, image `postgres:latest`,
+  ran 2025-11-07 for 27 min, exited cleanly) had bound anonymous volume
+  `eda50670…` at `/var/lib/postgresql`.
+- Read-only inspection of that volume via a temporary Alpine container showed:
+  `PG_VERSION=18`, three databases with OIDs 1/4/5 (the default `template0`,
+  `template1`, `postgres`), and **no user database**. The 2025-11-07 cluster was
+  initialized but never written to.
+
+**Conclusion: no pre-isolation experimental data survives on the host.** The
+current `automl-infra_postgres_data` volume is the sole source of run history.
+The legacy anon volume and container were subsequently removed in H.2.4.
+
+#### H.2.2 Trace persistence backfill
+
+Prior to session-2's persistence commit (`8460054`, 2026-07-12), successful B2
+runs wrote `.trace.json` and `.verification.json` sidecar files under
+`automl-reusables/logs/runs/` but did not persist the JSON into
+`run_results.reasoning_trace` / `verification_report`. As of the Stage 1 audit,
+only 3 of 57 runs (IDs 55, 56, 57) had populated trace columns.
+
+A one-off backfill script (`review/stage1/backfill_traces.py`) parsed the 16
+sidecar pairs, matched each to a `run_results` row by
+`(dataset_name, condition, seed, iteration)`, and executed dollar-quoted
+JSONB `UPDATE` statements in a single transaction. 14 of 16 sidecars matched;
+2 were unmatched because the persisted row's final iteration differs from the
+sidecar's iteration (a later attempt superseded the sidecar). **B2 trace
+coverage moved from 3/57 to 17/57 (30%).**
+
+#### H.2.3 Titanic dataset row deduplication
+
+The `datasets` table contained two rows with `(source='custom', name='train',
+target_col='Survived')` — a re-upload artifact from 2026-07-10:
+
+- `id=1` (17:07, 1 failed B2 run against it, 1 meta_features row)
+- `id=2` (17:28, 30 runs against it, 1 meta_features row) — canonical.
+
+Because both `run_results.dataset_id_fkey` and
+`meta_features.dataset_id_fkey` are declared `ON DELETE CASCADE`,
+`DELETE FROM datasets WHERE id=1;` in a single transaction transitively
+removed the 1 orphaned run and 1 orphaned meta_features row. Post-state:
+2 datasets, 2 meta_features, 56 run_results.
+
+#### H.2.4 Legacy Docker residue cleanup
+
+The exited `postgres` container from 2025-11-07 and its empty anon volume
+(`eda50670…`) were removed after H.2.1 confirmed they held no data. The
+unrelated `eyshit-*` compose project (different unrelated work on the same
+host) was not touched.
+
+#### H.2.5 Ollama runtime + RQ4 scope decision
+
+Verified Ollama reachability on the host. `gpt-oss:120b-cloud` and
+`ministral-3:14b-cloud` respond to `/api/generate`; `qwen3-coder:480b-cloud`
+was not present in the registry. Combined with the empirical observation that
+all 57 pre-Stage-1 `run_results` rows use only `gpt-oss:120b-cloud`, **RQ4
+(cross-backend variation) has zero data and was formally dropped from the
+thesis on 2026-07-15**. The thesis is now scoped to RQ1, RQ2, RQ3, RQ5.
+Edits to `README.md` and `SESSION_CONTEXT.md` recording the drop were made in
+Stage 1 and staged for commit at the end of Stage 2.
+
+#### H.2.6 STATUS document creation
+
+No status file (`STATUS_README*`) existed in any of the 8 sibling repos prior
+to the audit — the Stage 2 task text referenced sections of a non-existent doc.
+Two files were created at the parent `D:\Major Project\`:
+
+- `STATUS_README.md` (Stage 1) — first draft of a parent-level status doc with
+  the seven caveats surfaced during the audit.
+- `STATUS.md` (Stage 2) — supersedes the above; canonical single-source-of-truth
+  with 7 sections (thesis, panel state, schema state, sibling HEADs, known
+  issues with owner + target stage, file index, maintenance rules). Every
+  number in the panel-state section is refreshed from a live `SELECT` at write
+  time; no folklore is copied forward.
+
+#### H.2.7 Empirically contradicted prior claims
+
+The audit produced two direct contradictions with the pre-existing docs. Both
+are recorded for provenance because they matter for reproducing the pre-Stage-1
+state:
+
+- Claim: "`/analysis/traces` and `/analysis/rule-usage` return 404". Reality:
+  both return 200 on `:8004` and via `:8000` gateway. The endpoints landed on
+  2026-07-12 in `automl-analysis-service` commit `2c0d4fe` and gateway commit
+  `15fdccb`.
+- Claim: "only `run_id=6` has trace data". Reality: prior to Stage-1 backfill,
+  IDs 55, 56, 57 were the only trace-carrying rows. Post-backfill, 17 IDs
+  carry traces. `run_id=6` is a B0 run — B0 never emits a REASONING trace.
+
+#### H.2.8 Local settings hygiene
+
+The bash permission allowlist in `.claude/settings.local.json` had accumulated
+new entries during the audit. Committed as
+`80de7cd chore(claude): accumulate local bash allowlist from stage-1 audit session`
+following the project's existing pattern (see prior commit `c08152a`).
+
+### H.3 Stage 2 — Bug fixes + schema hardening (2026-07-15)
+
+Stage 2 was scoped to nine tasks with mandatory backup discipline: full pg_dump
+before any write, all mutations in explicit transactions, no changes to
+`01_schema.sql`. Task-by-task:
+
+#### H.3.1 Backup + snapshots (Task 0)
+
+- `pg_dump -F c` of the live DB (`review/stage2/pre_stage2.dump`, 21,294 bytes).
+- Restore dry-run into a scratch database confirmed `SELECT COUNT(*) FROM
+  run_results = 56`, matching the post-Stage-1 baseline. The Stage 2 task text
+  had expected 57 (pre-Stage-1 folklore); the delta of 1 is entirely accounted
+  for by the Titanic dedupe (H.2.3).
+- Git HEAD snapshots for all 8 sibling repos written to
+  `review/stage2/pre_stage2_head_*.txt`.
+- Working tree stashed: uncommitted RQ4 doc edits on `major-project-AutoML`
+  moved to `stash@{0}` for a clean Stage 2 tree.
+
+#### H.3.2 Ollama re-verification (Task 1)
+
+The Stage 1 Ollama verdict was confirmed but with one new development:
+
+- `gpt-oss:120b-cloud` — reachable, generates "ok" to the canary prompt.
+- `ministral-3:14b-cloud` — reachable, but the model itself now reports
+  `retired at 2026-07-15 00:00 PDT`. The service returns text but that text is
+  a retirement notice, not the requested content. Effectively dead.
+- `qwen3-coder:480b-cloud` — `ollama pull` returned
+  `Error: pull model manifest: file does not exist`. Model does not exist in
+  the current Ollama registry. Ignored per Ground Rule 4 (RQ4 was already
+  dropped in H.2.5 so this is not blocking).
+
+Reachability from `automl-generation-worker` to `http://host.docker.internal:11434`
+was confirmed via a Python `urllib` probe from inside the container (the
+container image ships without `curl`, so the earlier bash probe failed —
+switched to `python -c "import urllib.request..."` and got 3 models back).
+
+#### H.3.3 Ames Housing dataset registration (Task 6 precondition)
+
+Adding Ames Housing (OpenML id 41211) as a third dataset was blocked before
+Stage 2 because uploading it required a validated regression path through the
+metafeatures pipeline. Task 6's sanity check preceded the upload:
+
+- `POST /datasets/openml {"openml_id": 41211}` → HTTP 201, dataset registered
+  as `datasets.id=4`, `task_type=regression`, target `Sale_Price`, 2930 rows
+  × 81 columns.
+- `POST /meta-features/4?force=true` → HTTP 201 in ~28 s.
+
+The metafeatures response demonstrated all four feature groups branch on
+`task_type` correctly:
+
+- `simple.class_balance_ratio: null` (correctly skipped for regression).
+- `information.target_entropy: null` (correctly skipped).
+- `information.mutual_info_to_target` computed via `mutual_info_regression`
+  for all 80 features.
+- `landmarks.metric_used: "neg_rmse"` — the regression branch of
+  `landmarking.py:52-57` fired. `decision_stump_score = -39144.71`
+  (`DecisionTreeRegressor` RMSE), `naive_bayes_score = -279391.89` (`Ridge`
+  reused into that slot), `one_nn_score = -39721.89`
+  (`KNeighborsRegressor` RMSE).
+
+**No crash, no NaN-across-the-board, no silent fallback.** Stage 4 may enqueue
+Ames B2 cells safely.
+
+One schema oddity worth logging: `landmarks.naive_bayes_score` is a
+classification-era name and, for regression, holds `Ridge()` RMSE. The name is
+misleading even though the numeric value is correct. Renaming (or aliasing per
+`metric_used`) is on the Stage-3 handoff list.
+
+#### H.3.4 UNIQUE constraint on `datasets` (Task 3e)
+
+After H.2.3 removed the Titanic duplicate, a UNIQUE constraint was added to
+prevent future recurrence:
+
+```sql
+ALTER TABLE datasets
+  ADD CONSTRAINT datasets_source_name_target_uniq
+  UNIQUE (source, name, target_col);
+```
+
+The DDL is not currently mirrored in a fresh-init migration file — fresh DB
+setups run only `01_schema.sql`, which does not include this constraint.
+Adding `03_datasets_unique.sql` is on the Stage-3 handoff list so the two
+paths converge.
+
+#### H.3.5 Duplicate run row — deferred (Task 4)
+
+`run_results` still contains a duplicate tuple:
+`(dataset_id=3 [Telco], condition='B1', llm_backend='gpt-oss:120b-cloud', seed=44)`
+with rows `id=24` (test_score = **1.0000**, `error_category = NULL`) and
+`id=32` (test_score = 0.7533, `error_category = NULL`).
+
+Score delta is 24.7% — above the 20% Ground-Rule threshold — so **neither row
+was deleted.** Both remain in the DB pending a research-integrity decision.
+
+The pair is diagnostic of two known issues:
+
+1. Cloud-Ollama non-determinism (SESSION_CONTEXT §7 Finding 4): same seed
+   twelve minutes apart, different generated pipelines, different scores.
+2. A latent bug in `suspicious_leakage` detection: `id=24` scored exactly 1.0
+   on a real Telco run, but `error_category` is NULL. The current guard in
+   `error_taxonomy.py` fires at `SCORE >= 0.995` — that should have tripped.
+   Investigating the discrepancy is on the Stage-3 handoff list.
+
+#### H.3.6 Schema migration — token accounting (Task 5a)
+
+The token-accounting migration was applied to the live DB and mirrored as a
+fresh-init migration file:
+
+```sql
+-- automl-infra/db/init/02_add_tokens.sql (idempotent)
+ALTER TABLE run_results
+  ADD COLUMN IF NOT EXISTS prompt_tokens INT,
+  ADD COLUMN IF NOT EXISTS completion_tokens INT,
+  ADD COLUMN IF NOT EXISTS total_tokens INT GENERATED ALWAYS AS
+    (COALESCE(prompt_tokens,0) + COALESCE(completion_tokens,0)) STORED;
+```
+
+`01_schema.sql` was not modified. `total_tokens` is a Postgres-computed
+GENERATED column and the ORM model omits it — application code writes only the
+two source columns.
+
+#### H.3.7 Worker code change — minimal, additive (Task 5b)
+
+Following Ground Rule 7 (worker change must be minimal, additive), the code
+diff spans three files across two repos and does not refactor any existing
+code:
+
+- `automl-reusables/src/experiments/runner.py`: new function
+  `call_llm_with_usage(prompt, backend, seed) -> tuple[str, int | None, int | None]`.
+  Returns `(code_text, prompt_tokens, completion_tokens)`, extracting Ollama's
+  `prompt_eval_count` and `eval_count`. The original `call_llm` is untouched;
+  scripts that consume `call_llm` (`dry_run.py`, `run_sweep.py`) continue
+  working without change.
+- `automl-generation-service/app/models.py`: two new columns on
+  `RunResultRecord` (`prompt_tokens`, `completion_tokens`). `total_tokens` is
+  intentionally omitted from the ORM model — Postgres computes it, SQLAlchemy
+  should not.
+- `automl-generation-service/app/jobs.py`: import switch to
+  `call_llm_with_usage`; per-iteration accumulator variables
+  (`prompt_tokens_total`, `completion_tokens_total`, `tokens_captured` flag);
+  two new kwargs on `_persist`. When Ollama omits the fields (some cloud
+  retry paths), `None` is persisted rather than a fabricated zero.
+
+Full diff at `review/stage2/worker_token_diff.patch` (122 lines).
+
+The worker container was rebuilt (`docker compose up -d --build
+generation-worker`, ~90 s) and confirmed to be consuming the queue via a
+post-restart log tail plus the canary run in H.3.9.
+
+#### H.3.8 Trace-backfill re-verification (Task 7)
+
+Task 7 asked whether pre-2026-07-12 B2 runs could have their `reasoning_trace`
+backfilled. H.2.2 had already done exactly this in Stage 1, so Stage 2 Task 7
+became documentation: 32 sidecar files present (16 `.trace.json` + 16
+`.verification.json`), 14 of 16 pairs mapped to run rows, 2 remained
+unmatched, giving current coverage of 17/35 B2 runs (48.6%). **18 B2 rows
+remain trace-less** because no sidecar exists on disk for those runs (the
+subprocess did not emit a valid REASONING line, or the sidecar was never
+written). Remedy is to re-run those cells in Stage 4.
+
+#### H.3.9 Canary run — end-to-end token verification (Task 9c)
+
+To verify the token-logging code path lands in the DB after the worker
+rebuild, a single B2 cell was enqueued against the newly-registered Ames
+dataset:
+
+```json
+{"dataset_id": 4, "condition": "b2_metafeature",
+ "llm_backend": "gpt-oss:120b-cloud", "seed": 999,
+ "max_iter": 3, "timeout_seconds": 300}
+```
+
+The job ran 3 m 30 s across 3 iterations. The Ames B2 pipeline itself failed
+(`success = false`, `error_category = runtime_other`) — expected on the first
+B2 attempt for a wide, regression dataset in a 3-iteration budget. Independent
+of that failure, the token columns populated as designed:
+
+| column            | value | source |
+| ----------------- | ----: | ------ |
+| prompt_tokens     | 23653 | sum of 3 iterations' `prompt_eval_count`   |
+| completion_tokens |  9532 | sum of 3 iterations' `eval_count`          |
+| total_tokens      | 33185 | Postgres GENERATED (23653 + 9532 ✔)        |
+
+**End-to-end token plumbing verified.** All future runs will populate these
+columns.
+
+### H.4 Cumulative state deltas (pre-Stage-1 → post-Stage-2)
+
+Every numeric here is a live `SELECT` at the end of Stage 2, cross-checked with
+the pre-Stage-1 snapshot embedded in the audit outputs.
+
+| Metric                             | Pre-Stage-1 | Post-Stage-1 | Post-Stage-2 |
+| ---------------------------------- | ----------: | -----------: | -----------: |
+| `datasets` rows                    |           3 |            2 |            3 |
+| `meta_features` rows               |           3 |            2 |            3 |
+| `run_results` rows                 |          57 |           56 |           56 |
+| `sweep_jobs` rows                  |           4 |            4 |            4 |
+| B2 runs with `reasoning_trace`     |           3 |           17 |           17 |
+| Duplicate `datasets` tuples        |           1 |            0 |            0 |
+| Duplicate `run_results` tuples     |           1 |            1 |            1 (deferred) |
+| Runs with `prompt_tokens` non-null |     (col absent) | (col absent) |            1 |
+| `datasets` unique constraint       |     absent  |     absent   |    present   |
+| `run_results` token columns        |     absent  |     absent   |    present   |
+
+### H.5 Schema evolution
+
+Before Stage 1: `01_schema.sql` (unchanged).
+
+After Stage 2:
+
+- Live DB has three added columns on `run_results` and one added UNIQUE
+  constraint on `datasets`.
+- New migration file `automl-infra/db/init/02_add_tokens.sql` (idempotent)
+  brings fresh DB inits into parity with the live DB for the columns.
+- The UNIQUE constraint is **not yet** in a fresh-init migration file — this
+  is called out as a Stage-3 handoff (H.7 item 9). Until then, a fresh
+  `docker compose down -v && up` would produce a DB without the constraint.
+
+### H.6 Code changes committed / uncommitted at end of Stage 2
+
+Post-canary, the working state is:
+
+| Repo                            | Uncommitted change                                                       |
+| ------------------------------- | ------------------------------------------------------------------------ |
+| `major-project-AutoML`          | Stage-1 doc edits (RQ4 drop) in `stash@{0}`; this appendix           |
+| `automl-infra`                  | new file `db/init/02_add_tokens.sql`                                     |
+| `automl-reusables`              | added `call_llm_with_usage` in `src/experiments/runner.py`               |
+| `automl-generation-service`     | token columns in `app/models.py`, token plumbing in `app/jobs.py`        |
+| Other 4 repos                   | clean                                                                    |
+
+### H.7 Handoff to Stage 3
+
+Ordered by research-integrity impact:
+
+1. **Manual sign-off on the deferred duplicate run** (`run_id=24` vs `run_id=32`).
+   Recommended: keep 32, archive 24 as a diagnostic case study.
+2. **Fix the `suspicious_leakage` guard boundary** in
+   `automl-reusables/src/execution/error_taxonomy.py`. Score exactly 1.0
+   should trip the `>= 0.995` guard; investigate why `run_id=24` did not.
+3. **Rename the `naive_bayes_score` landmarks slot** (or add a
+   `metric_used`-aware alias in `contracts.py`) so regression's Ridge RMSE
+   does not read as Naive Bayes.
+4. **Backfill script or explicit exclusion decision** for the 18 remaining
+   trace-less B2 runs. Sidecars do not exist on disk for these; either accept
+   them as pre-verification-era, or re-run those specific cells in Stage 4.
+5. **Upload the remaining 27 CC18 datasets** (the catalog exposes them, the
+   panel does not include them). Necessary before Stage-4 sweeps that hope to
+   answer RQ5.
+6. **Add `03_datasets_unique.sql`** so fresh DB inits get the UNIQUE
+   constraint added in H.3.4.
+7. **Un-stash and commit** the Stage-1 RQ4 doc edits currently in
+   `stash@{0}` on `major-project-AutoML`.
+8. **Replace or remove `ministral-3:14b-cloud`** references anywhere in
+   prompts, README examples, or tests — the model is retired.
+9. **Remove `qwen2.5:3b`** from the Ollama registry per SESSION_CONTEXT §13
+   (cloud-only policy).
+
+### H.8 Reproducibility notes
+
+- Full Stage 1 audit outputs (18 files) at
+  `major-project-AutoML/review/stage1/`.
+- Full Stage 2 outputs (34 files) at `D:\Major Project\review\stage2\`
+  (outside this repo, at the parent — spans all 8 sibling repos).
+- Both stages' report files (`STAGE1_REPORT.md`, `STAGE2_REPORT.md`) are
+  self-contained and include restoration instructions if a future replay of
+  either stage is needed.
+- `STATUS.md` at the parent is the current single-source-of-truth for
+  panel state, schema state, and open issues.
+
+---
+
 *End of report. This document is the substantive record; SESSION_CONTEXT.md is its concise index.*

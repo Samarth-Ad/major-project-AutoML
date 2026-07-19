@@ -1,7 +1,7 @@
 # Meta-Feature-Guided Prompting for LLM-Driven Tabular AutoML: A System Study on Faithfulness and Correctness
 
 **Status:** In-progress research report (paper draft basis)
-**Working dates:** 2026-07-09 to 2026-07-11
+**Working dates:** 2026-07-09 to 2026-07-19 (Stage 1–2: 07-14 → 07-15; Stage 3: 07-15 → 07-16; Stage 4a: 07-19)
 **Author of record:** Samarth Adhikari (Major Project, undergraduate thesis)
 **Codebase:** github.com/Major-Proj-AutoML/*  +  github.com/Samarth-Ad/major-project-AutoML
 
@@ -42,6 +42,8 @@ The system contributes: (i) a **verifiable AutoML pipeline** that separates fait
 16. [Appendix E — Error Taxonomy](#appendix-e--error-taxonomy)
 17. [Appendix F — Repository Layout](#appendix-f--repository-layout)
 18. [Appendix G — Reproducibility](#appendix-g--reproducibility)
+19. [Appendix H — Stage-1 and Stage-2 Operational Log (2026-07-14 → 2026-07-15)](#appendix-h--stage-1-and-stage-2-operational-log-2026-07-14--2026-07-15)
+20. [Appendix I — Stage 3 & Stage 4a Pre-Sweep Validation (2026-07-15 → 2026-07-19)](#appendix-i--stage-3--stage-4a-pre-sweep-validation-2026-07-15--2026-07-19)
 
 ---
 
@@ -1363,6 +1365,317 @@ Ordered by research-integrity impact:
   either stage is needed.
 - `STATUS.md` at the parent is the current single-source-of-truth for
   panel state, schema state, and open issues.
+
+---
+
+## Appendix I — Stage 3 & Stage 4a Pre-Sweep Validation (2026-07-15 → 2026-07-19)
+
+This appendix appends to the report and documents two structured stages that
+follow Appendix H and precede the Stage 4b full sweep. Nothing above this line
+has been modified. Facts below were verified against the live system on the
+D:\ machine (`DESKTOP-LK0JISF`) unless a Stage 3 sub-section explicitly notes
+that the work was performed on the C:\ machine. Full working files:
+
+- Stage 3 (28 files): `D:\Major Project\review\stage3\` — original host was
+  the C:\ machine, artifacts copied over.
+- Stage 4a (33 files): `D:\Major Project\review\stage4a\`.
+
+### I.1 Purpose
+
+Two motivations:
+
+1. **Close the gaps Appendix H flagged as Stage-3 handoff** (H.7): duplicate
+   run sign-off, leakage-guard investigation, `naive_bayes` landmarker
+   rename, CC18 dataset expansion, `03_datasets_unique.sql` migration, cloud
+   Ollama model panel verification.
+2. **Certify the runway before Stage 4b commits to a 300+ cell sweep.** Two
+   things a full sweep cannot tolerate: brittle data paths that vary by
+   host, and model panel entries that silently unavailable at run time. Both
+   are established here.
+
+### I.2 Stage 3 — Consolidation and audit (2026-07-15 → 2026-07-16, C:\ machine)
+
+Full write-up in `review/stage3/STAGE3_REPORT.md`. This section is a
+compressed record for paper-facing readers; the numbered items below map
+1:1 to the Stage 3 report's task list.
+
+#### I.2.1 Ollama model panel — as of 2026-07-15
+
+The intended Stage 4 panel was probed 5× each via `/api/generate`:
+
+| model                     | probes | median latency | tokens present | `thinking` present |
+|---------------------------|--------|----------------|----------------|--------------------|
+| gpt-oss:120b-cloud        | 5/5    | 1.07 s         | yes            | **yes**            |
+| gemma4:31b-cloud          | 5/5    | 1.07 s         | yes            | no                 |
+| nemotron-3-ultra:cloud    | 5/5    | 1.55 s         | yes            | yes                |
+
+Two paper-relevant findings:
+
+1. **`gpt-oss` emits a non-empty `thinking` field**, not just nemotron. Any
+   RQ4 split framed as "reasoning vs non-reasoning models" is muddied by
+   this — the axis is not clean at the panel level.
+2. **Backup pool** of 4 candidates (`ministral-3:14b-cloud`,
+   `glm-5.1:cloud`, `devstral-small-2:24b-cloud`, `nemotron-3-nano:30b-cloud`):
+   0/4 pullable at time of Stage 3 audit; all returned 404. Stage 3
+   concluded no drop-in replacement existed. **This finding was overtaken
+   by Stage 4a** — nemotron-3-nano *is* pullable now (§I.3.4).
+
+#### I.2.2 `suspicious_leakage` guard — root cause
+
+Stage 2's assumption that the guard was buggy (Appendix H, H.3) was a
+mis-attribution to the wrong file. The guard lives at
+`automl-reusables/src/execution/runner.py:120` (`SCORE >= 0.995`,
+classification-only) and is correct in current code. `run_id=24` escaped
+because the guard commit `3838881` landed at 2026-07-10 18:29:16 UTC —
+11 minutes *after* the row was persisted at 18:18:38 UTC. No code change
+required; retroactively flagging the pre-guard row is a data-repair
+operation, applied under `review/stage3/leakage_retroactive_transcript.txt`.
+
+#### I.2.3 `naive_bayes` landmarker rename
+
+The `naive_bayes_score` landmarker key is metric-agnostic in code but
+metric-specific in interpretation: on regression tasks it holds a Ridge
+RMSE, not a Naive Bayes score. Renamed in `contracts.py` and every
+downstream reference. Patch: `review/stage3/naive_bayes_rename_diff.patch`.
+
+#### I.2.4 Nemotron divergence probe — INCONCLUSIVE (Stage 3), resolved in
+Stage 4a as UNAVAILABLE
+
+The Stage 3 probe of `nemotron-3-ultra:cloud` on Titanic (three cells, one
+per B0/B1/B2) crashed inside the worker with `FileNotFoundError`. The CSV
+referenced by `datasets.id=2` was missing on the C:\ host — the machine
+had never been the one that received the original CSV upload. This is the
+architectural flaw that motivates I.3.
+
+The probe was re-attempted in Stage 4a on the D:\ machine and resolved to
+FAIL (§I.3.3), but by unavailability, not by content.
+
+#### I.2.5 Schema hardening
+
+`03_datasets_unique.sql` written and applied, closing the Stage 2 H.7 item
+that fresh DB inits lacked the UNIQUE constraint on `datasets(source,
+name, target_col)`. Migration transcript:
+`review/stage3/migration_03_apply.txt`.
+
+### I.3 Stage 4a — Pre-Sweep Validation (2026-07-19, D:\ machine)
+
+Full write-up in `../review/stage4a/STAGE4A_REPORT.md`. This is the
+substrate-hardening stage that separates Stage 3 audit findings from the
+Stage 4b sweep. Four validations, each with a binary go/no-go outcome that
+directly determines the panel Stage 4b enters with.
+
+#### I.3.1 Substrate — CSV/DB stable-path migration
+
+Symptom (inherited from Stage 3): `datasets.train_path` values pointed at
+`/opt/automl-reusables/data/experiments/custom/tmp<random>/train.csv`.
+The `tmp<random>` folder name is the stem of a Python
+`tempfile.NamedTemporaryFile()` handle from the original upload session
+and only exists on the host that received that particular upload. This
+made the DB row semantically host-scoped even though the paths look
+universal.
+
+Migration (Stage 4a Task 1, D:\ machine, all inside one transaction):
+
+1. All 6 CSVs (3 datasets × train + test) confirmed present and readable
+   by `automl-generation-worker`.
+2. Copied to `/opt/automl-reusables/data/experiments/stable/<dataset_id>/{train,test}.csv`.
+3. `UPDATE datasets SET train_path = ..., test_path = ...` for each of 3
+   rows, in one `BEGIN/COMMIT` with pre-commit `SELECT` verification.
+4. Old copies retained per Ground Rule 7 (fallback if Stage 4b breaks on
+   the new path).
+5. **Code fix in `automl-data-service/app/service.py`**: added
+   `_relocate_to_stable(dataset)` called after both `upload_csv()` and
+   `import_openml()` commit. Future dataset registrations land at
+   `stable/<id>/` on first save. Container not rebuilt in Stage 4a —
+   patch applies at the next `docker compose build data-service`.
+   Diff: `review/stage4a/data_service_stable_paths.patch`.
+6. Post-migration `automl-generation-worker` verification: 6/6 CSVs
+   readable at the new paths (`csv_worker_verification.txt`).
+
+Paper implication: the reproducibility appendix (G) now has an explicit
+statement of where dataset CSVs live in the container filesystem and why
+that location is stable across hosts. This closes the ambiguity that
+Stage 3's crash exposed.
+
+Deviation from Stage 4a plan: the plan proposed
+`automl-data-service/data/uploads/<id>/` as the stable target. That path
+is not bind-mounted into `automl-generation-worker`; only the
+`automl-reusables` directory is. Same architectural intent, reachable
+path.
+
+#### I.3.2 Panel — cloud model availability re-check
+
+`ollama pull` and probe-via-API were repeated for the three primaries
+and the intended backup:
+
+| model                        | ollama pull | `/api/generate` | tokens | thinking |
+|------------------------------|-------------|-----------------|--------|----------|
+| gpt-oss:120b-cloud           | already local | ok            | yes    | yes      |
+| gemma4:31b-cloud             | success       | ok            | yes    | no       |
+| nemotron-3-ultra:cloud       | **404 MANIFEST_UNKNOWN** | **404 not found** | — | — |
+| nemotron-3-nano:30b-cloud    | success       | ok            | yes    | yes      |
+| nemotron-3-super:cloud       | success       | ok            | yes    | yes      |
+
+Two paper-relevant findings:
+
+1. **`nemotron-3-ultra:cloud` was delisted from the Ollama registry
+   between Stage 3 (2026-07-15, present) and Stage 4a (2026-07-19,
+   gone).** The library page at `ollama.com/library/nemotron-3-ultra`
+   still advertises the `cloud` tag, but direct registry probes for
+   `{latest, cloud, ultra, 341b-cloud, ultra-cloud}` all return
+   `MANIFEST_UNKNOWN`. This is not a client-version issue — the two
+   sibling nemotron variants pulled fine.
+2. **The intended-backup nemotron-3-nano is now available** (Stage 3
+   marked it as 404). And a sibling 120b variant, `nemotron-3-super:cloud`,
+   is also present. The panel has options; the specific model named in the
+   task plan does not.
+
+Consequence for Stage 4b: the third primary slot is empty. Reviewer
+decides between shipping a 2-backend panel (360 cells) or substituting
+`nemotron-3-super` (540 cells) after one Task-2-style divergence probe.
+Recorded evidence: `review/stage4a/nemotron_ultra_unavailable.txt`.
+
+#### I.3.3 Task 2 (nemotron divergence) — verdict FAIL by unavailability
+
+Cannot be executed with the specified model. Per plan verdict-branching,
+this drops nemotron-ultra from the panel. Not a model-content finding,
+but the *rate* of registry churn (a listed cloud model disappearing
+within 4 days) is a limitation worth flagging in §9 of any published
+version of this work: the panel is not stable across the reproducibility
+window.
+
+#### I.3.4 Task 3 (backup qualification) — verdict CONDITIONAL
+
+`nemotron-3-nano:30b-cloud` was pulled, probed 5× (all OK, both token
+fields populated, `thinking` present, median ≈1.0 s), and driven through
+one B2 test cell on Titanic (seed=9500, max_iter=3, timeout=300):
+
+- Row 59 in `run_results`: `success=false, iterations_used=3,
+  prompt_tokens=8900, completion_tokens=44843, has_trace=true,
+  error_category=import_error`.
+- Root cause: model produced code that uses
+  `sklearn.impute.IterativeImputer` without the required
+  `from sklearn.experimental import enable_iterative_imputer` — a
+  well-known sklearn gotcha the model did not self-correct across three
+  retries. `category_encoders` (also imported) is installed and did not
+  cause the error.
+- Mechanically integrated: gateway → worker → generation-service →
+  ollama loop works, tokens capture, trace parser fires.
+- Fit as backup (fallback if a primary drops mid-Stage-4b); **not fit as
+  a first-choice primary substitute**.
+
+Full write-up: `review/stage4a/backup_qualification.md`.
+
+#### I.3.5 Task 4 (36-cell canary) — verdict PASS (88.9%)
+
+Design B canary: 2 datasets (Titanic + Telco) × 3 conditions × 2 backends
+(`gpt-oss:120b-cloud`, `gemma4:31b-cloud`) × 3 seeds = 36 cells. Panel
+reduced from the plan's 54 because Task 2 dropped nemotron-ultra.
+
+Wall clock: 21 min 05 s (11:25:43 → 11:46:16 UTC). Success 32/36.
+Zero worker restarts, zero queue stalls, zero infrastructure errors.
+
+Per-model summary (source: `review/stage4a/canary_summary.txt`):
+
+| llm_backend         | attempted | succeeded | notes                                        |
+|---------------------|-----------|-----------|----------------------------------------------|
+| gpt-oss:120b-cloud  | 18        | 18        | Clean sweep; 2 B2 cells needed retries       |
+| gemma4:31b-cloud    | 18        | 14        | All 4 failures in B2: 1 `import_error` (Titanic), 3 `reasoning_unfaithful` (Telco) |
+
+Cross-model verifications:
+
+- **Trace parser**: `has_trace = true` on 36/36. Both models, all three
+  conditions. Parser is not model-specific. Caveat: `reasoning_trace` is
+  populated for B0 and B1 too (not just B2 as a metafeature-linked prompt
+  would suggest), so downstream analyses of *metafeature-linked
+  reasoning* should filter on `condition = 'B2'` — this is a reporting
+  observation, not a bug.
+- **Token accounting**: both `prompt_tokens` and `completion_tokens`
+  populated on 36/36. Values scale as expected (B2 prompt ≈ 10× B0
+  prompt).
+- **Leakage guard**: 0 `suspicious_leakage` hits. Note: Telco B2 seed=2002
+  on gpt-oss produced test_score = 0.505 (near-random). Not a leakage
+  hit (guard fires near 1.0), just a genuine bad-model-choice outcome
+  worth reporting in Stage 4b analysis rather than filtering out.
+
+Paper implication (RQ2, RQ6): **gemma4 exhibits a specific B2 failure
+profile — all 3 seeds of Telco B2 rejected as `reasoning_unfaithful`**.
+This is the guardrail catching a genuine faithfulness violation
+(model's cited rules do not appear in its emitted code), consistent with
+the report's core finding that faithfulness and correctness are
+orthogonal. On this 3-seed slice the effect is deterministic within
+gemma4.
+
+Wall-clock extrapolation for Stage 4b Design B (12 datasets):
+
+- 2-backend / 360 cells: 3.5 h naive, 6–10 h realistic.
+- 3-backend / 540 cells: 5.3 h naive, 9–15 h realistic.
+
+Both are well under the plan's 60 h alarm bar. The plan's a-priori
+estimate of 41 h looks conservative.
+
+Full write-up: `review/stage4a/canary_analysis.md` and
+`STAGE4A_REPORT.md`.
+
+### I.4 Cumulative state deltas (post-Stage-2 → post-Stage-4a)
+
+| item                                 | post-Stage-2 | post-Stage-3 | post-Stage-4a |
+|--------------------------------------|--------------|--------------|---------------|
+| `run_results` row count              | 56           | 57           | **94**        |
+| Datasets registered                  | 3            | 3            | 3 (Stage 4b Task 0 imports 9 more) |
+| CSV path layout                      | `custom/tmp<rand>/` | `custom/tmp<rand>/` | **`stable/<id>/`** |
+| Data-service upload code             | temp path    | temp path    | **stable path (patch, not rebuilt)** |
+| Nemotron-ultra in panel              | assumed      | INCONCLUSIVE | **DROPPED (unavailable)** |
+| Backup model status                  | 0/4 pullable | 0/4 pullable | **nemotron-nano CONDITIONAL, nemotron-super candidate** |
+| Sweep-runner max cells stress-tested | ~1           | ~1           | **36 (0-fault)** |
+
+### I.5 Code changes committed / uncommitted at end of Stage 4a
+
+| Repo                            | Uncommitted change                                                      |
+|---------------------------------|-------------------------------------------------------------------------|
+| `major-project-AutoML`          | this appendix + ToC + working-dates line                                |
+| `automl-data-service`           | `app/service.py`: added `_relocate_to_stable`, hooked into two flows    |
+| Other 6 repos                   | clean                                                                   |
+| DB                              | 3 `datasets` rows updated with stable paths; +37 `run_results` rows     |
+
+Stage 4a rollback anchor: git tag `stage3-complete` on all 8 repos.
+
+### I.6 Handoff to Stage 4b (reviewer signoff required)
+
+Ordered by decision blocking:
+
+1. **Panel decision on the vacated nemotron-ultra slot.** Three options:
+   (a) ship 2-backend (360 cells), (b) substitute `nemotron-3-super:cloud`
+   after one Task-2-style probe, (c) substitute `nemotron-3-nano:30b-cloud`
+   (not recommended as primary — see I.3.4). Recommendation: (b) if
+   appetite exists for the extra probe, else (a).
+2. **Rebuild `automl-data-service`** so the `_relocate_to_stable` patch
+   takes effect before Stage 4b Task 0 imports 9 OpenML datasets. Without
+   the rebuild, those imports land in `custom/tmp<rand>/` again — the
+   very failure mode this stage exists to eliminate.
+3. **Import the 9 remaining Stage 4b Design B datasets** via
+   `POST /datasets/openml`: OpenML IDs 15, 37, 38, 44, 151, 1461, 1487,
+   1510, 1590. All are listed in
+   `automl-reusables/src/experiments/datasets.py::SELECTED_CLASSIFICATION`.
+4. **Optional pre-Stage-4b probe** on a large-dataset B2 cell (e.g. adult,
+   openml 1590) to tighten the wall-clock extrapolation for the
+   largest-dataset regime. Current canary is small-medium only.
+
+### I.7 Reproducibility notes
+
+- Every Stage 4a mutation was preceded by `pg_dump -F c` and a restore
+  test into a scratch DB (see `pre_stage4a.dump` and `backup_verified.txt`;
+  baseline restored 57/57 rows exactly).
+- Post-stage backup at `review/stage4a/post_stage4a.dump` (94 rows) —
+  restores forward from 57 to 94 if Stage 4b needs a clean fall-back
+  point before the full sweep begins.
+- All 8 repositories were tagged `stage3-complete` at Stage 4a start.
+  The tag names Stage 3, not Stage 4a, so it marks *the state the
+  reviewer signed off on before the substrate migration*. Any future
+  Stage 4a rollback should target this tag.
+- Host: `DESKTOP-LK0JISF` (D:\). All Stage 4a paths in the DB assume
+  this host until Stage 4b or later formalizes the container-relative
+  path (`/opt/automl-reusables/data/experiments/stable/<id>/`).
 
 ---
 

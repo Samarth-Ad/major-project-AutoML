@@ -1,7 +1,7 @@
 # Meta-Feature-Guided Prompting for LLM-Driven Tabular AutoML: A System Study on Faithfulness and Correctness
 
 **Status:** In-progress research report (paper draft basis)
-**Working dates:** 2026-07-09 to 2026-07-19 (Stage 1–2: 07-14 → 07-15; Stage 3: 07-15 → 07-16; Stage 4a: 07-19)
+**Working dates:** 2026-07-09 to 2026-07-19 (Stage 1–2: 07-14 → 07-15; Stage 3: 07-15 → 07-16; Stage 4a: 07-19 daytime; Stage 4a-bis: 07-19 evening)
 **Author of record:** Samarth Adhikari (Major Project, undergraduate thesis)
 **Codebase:** github.com/Major-Proj-AutoML/*  +  github.com/Samarth-Ad/major-project-AutoML
 
@@ -44,6 +44,7 @@ The system contributes: (i) a **verifiable AutoML pipeline** that separates fait
 18. [Appendix G — Reproducibility](#appendix-g--reproducibility)
 19. [Appendix H — Stage-1 and Stage-2 Operational Log (2026-07-14 → 2026-07-15)](#appendix-h--stage-1-and-stage-2-operational-log-2026-07-14--2026-07-15)
 20. [Appendix I — Stage 3 & Stage 4a Pre-Sweep Validation (2026-07-15 → 2026-07-19)](#appendix-i--stage-3--stage-4a-pre-sweep-validation-2026-07-15--2026-07-19)
+21. [Appendix J — Stage 4a-bis Substitution Qualification & Rebuild (2026-07-19)](#appendix-j--stage-4a-bis-substitution-qualification--rebuild-2026-07-19)
 
 ---
 
@@ -1676,6 +1677,235 @@ Ordered by decision blocking:
 - Host: `DESKTOP-LK0JISF` (D:\). All Stage 4a paths in the DB assume
   this host until Stage 4b or later formalizes the container-relative
   path (`/opt/automl-reusables/data/experiments/stable/<id>/`).
+
+---
+
+## Appendix J — Stage 4a-bis Substitution Qualification & Rebuild (2026-07-19)
+
+This appendix appends to Appendix I and documents the follow-up stage that
+resolved the two blocking items Stage 4a left for reviewer decision: the
+vacated nemotron-ultra slot in the model panel, and the un-rebuilt
+`data-service` container carrying the stable-path patch. Nothing above this
+line has been modified. Full working files: `../review/stage4a-bis/`
+(33 files).
+
+### J.1 Purpose
+
+Stage 4a produced two blocking findings the reviewer had to resolve
+before Stage 4b could begin:
+
+1. `nemotron-3-ultra:cloud` was delisted from the Ollama registry
+   (Appendix I, §I.3.2). Panel needed either a substitute or a
+   downgrade to two backends.
+2. The stable-path code fix (`_relocate_to_stable`) was applied to the
+   working tree of `automl-data-service` but the container was **not
+   rebuilt**. Future dataset imports would still hit the old temp-path
+   code.
+
+The reviewer chose **Option 2** from Stage 4a §10 handoff: substitute
+`nemotron-3-super:cloud` after a Task-2-style divergence probe. Stage
+4a-bis executes that probe, rebuilds the container, and pins the
+wall-clock estimate for the largest dataset in the Stage 4b panel
+(`adult`, 48,842 rows) so the runtime budget is no longer extrapolated
+from small-dataset canary data.
+
+Panel after this stage (locked, no more changes):
+
+* `gpt-oss:120b-cloud` — primary (Stage 4a canary 18/18)
+* `gemma4:31b-cloud` — primary (Stage 4a canary 14/18, B2 weakness noted, kept)
+* `nemotron-3-super:cloud` — primary (this stage §J.3)
+* `nemotron-3-nano:30b-cloud` — backup (Stage 4a CONDITIONAL)
+
+### J.2 Nemotron-super availability probe
+
+`ollama pull nemotron-3-super:cloud` was a no-op success (the model was
+already pulled during Stage 4a as a candidate). A 5× `/api/generate`
+probe returned:
+
+| probe | prompt_tok | completion_tok | latency_s | has_thinking | thinking_len |
+|-------|------------|----------------|-----------|--------------|--------------|
+| 1     | 24         | 29             | 4.07      | true         | 100          |
+| 2     | 24         | 148            | 2.43      | true         | 602          |
+| 3     | 24         | 47             | 1.09      | true         | 180          |
+| 4     | 24         | 173            | 1.96      | true         | 790          |
+| 5     | 24         | 46             | 1.51      | true         | 162          |
+
+Median latency 1.51 s; both token fields populated on every call; all
+5 responses have a non-trivial `thinking` field. Worker container sees
+`nemotron-3-super` in `/api/tags` (6 models visible total).
+
+### J.3 Nemotron-super divergence verdict — PASS
+
+Full analysis in `../review/stage4a-bis/super_divergence_analysis.md`.
+Four runs on Titanic (seeds 9601, 9602, 9603, 9604):
+
+* Seed 9601 (B0) failed with `error_category = infrastructure`; root
+  cause was an `ollama.exe` taskkill earlier in the session that
+  triggered a 600 s read timeout on the first cold call. Not a
+  model-quality failure. Retried at seed 9604 → SUCCESS.
+* Seed 9602 (B1): SUCCESS iter 1, score 0.7933, 715 prompt / 1974
+  completion tokens.
+* Seed 9603 (B2): SUCCESS after 3 iters, score 0.7515, 9025 prompt /
+  26243 completion tokens.
+* Seed 9604 (B0 retry): SUCCESS iter 1, score 0.8078, 335 prompt / 1279
+  completion tokens.
+
+Comparison of the three generated pipelines (B0/B1/B2 on Titanic,
+`super_gen_B{0,1,2}.py`):
+
+| axis                   | B0 (seed 9604)             | B1 (seed 9602)              | B2 (seed 9603)                                                                        |
+|------------------------|----------------------------|-----------------------------|---------------------------------------------------------------------------------------|
+| Model                  | LogisticRegression         | RandomForestClassifier      | LogisticRegression (chosen via cited rule)                                            |
+| Imputation (numeric)   | SimpleImputer('median')    | SimpleImputer('median')     | **IterativeImputer**                                                                  |
+| Scaling                | StandardScaler (all)       | StandardScaler (all)        | **StandardScaler for Age, PowerTransformer + RobustScaler for Fare**                  |
+| Categorical encoding   | OneHotEncoder              | OneHotEncoder               | **OneHotEncoder for low-cardinality, TargetEncoder for high-cardinality (>20)**       |
+| Cited meta-features    | none                       | none                        | Age skew 0.35, Fare skew 4.64, Fare outlier ratio 0.128, cardinality > 20 threshold   |
+| Cited model-select rule| none                       | none                        | `linear_score - one_nn_score > 0.1 -> LogisticRegression`                             |
+
+Faithfulness check on B2: `grep -icE
+"cardinality|skewness|class imbalance|landmarker|target encoding|
+mutual information|entropy"` on `super_gen_B0.py` returned **0 hits**
+— super does not leak meta-feature vocabulary into the naive baseline.
+Cited rules in B2 (Age skew, Fare skew, high-cardinality threshold,
+model-selection landmarker inequality) all appear literally in the
+generated code as comments and as the corresponding sklearn calls.
+
+**Notable model-quality delta over the backup**: super generates
+`from sklearn.experimental import enable_iterative_imputer` before using
+`IterativeImputer`. This is the exact sklearn gotcha that broke
+`nemotron-3-nano:30b-cloud` on Stage 4a's B2 test cell (all three retries
+hit `import_error` on the same missing import). Super handles it first
+try, providing concrete qualitative evidence for admitting super as a
+primary rather than promoting the nano backup.
+
+Trace parser and token accounting both work with super's output format
+(`has_trace = true` on 3/3 successful runs; `prompt_tokens` and
+`completion_tokens` populated on the same). Consequence: super joins
+the panel as the third primary. **Panel locked at 3 backends × 540
+cells for Stage 4b.**
+
+### J.4 Data-service rebuild and smoke test
+
+* Pre-existing patch on the working tree (Stage 4a §I.3.1) was committed
+  as `feat(service): stable-path uploads (Stage 4a migration)`
+  (`43fd18a`).
+* `docker compose build data-service && up -d data-service` recreated
+  the container. Health checks green:
+  * `/health` on data-service → `{"status":"ok","database":"connected"}`
+  * `/health` on gateway →
+    `{"status":"ok","upstream":{data,metafeatures,generation,analysis: all true}}`
+* Smoke test: `POST /datasets/openml {openml_id: 15}` (breast-w) →
+  new dataset row `id=5` with `train_path=
+  /opt/automl-reusables/data/experiments/stable/5/train.csv`.
+* Worker container confirmed both `stable/5/train.csv` and
+  `stable/5/test.csv` exist and are readable.
+
+**The upload code change is now live for all future dataset
+registrations.** The 7 remaining OpenML datasets in Stage 4b Task 0
+will land at `stable/<id>/` on first save without any manual
+migration step.
+
+### J.5 Adult wall-clock measurement
+
+Full analysis in `../review/stage4a-bis/adult_wallclock_analysis.md`.
+
+* `POST /datasets/openml {openml_id: 1590}` (adult) → new row `id=6`,
+  48,842 rows × 15 cols, path `stable/6/`. Import took 18.9 s.
+* `POST /meta-features/6?force_recompute=true` → **1.17 s**. No cache
+  warmup concern.
+* One B2 cell with `gpt-oss:120b-cloud`, seed 9700, max_iter=3,
+  timeout=600: wall clock **47 s**, SUCCESS on iter 1, prompt 2633,
+  completion 3120, test_score 0.8003, code runtime 2.27 s.
+
+Comparison against the Titanic canary baseline:
+
+| dataset | rows × cols | B2 wall clock (gpt-oss) | B2 code runtime |
+|---------|-------------|--------------------------|-----------------|
+| Titanic | 891 × 11    | ~40 s                    | 1.21–1.54 s     |
+| Adult   | 48,842 × 15 | **47 s**                 | 2.27 s          |
+
+**Stage 4a's projected 3–4× slowdown on adult-class datasets was
+pessimistic. Actual slowdown: ~1.2×.** LLM latency dominates end-to-end
+cost; dataset size barely affects it because meta-features are the only
+size-sensitive prompt component and their compute is 1 s.
+
+### Revised Stage 4b wall-clock estimate
+
+* 3-backend, 540 cells: naive 7.05 h, **realistic 8–10 h** (accounting
+  for super's ~10× completion-token load on B2 and occasional 3-iter
+  retries). Well under the 60 h alarm bar. No need for parallel workers
+  or an overnight schedule.
+* This supersedes Stage 4a's 9–15 h realistic ceiling for the same
+  panel size.
+
+### J.6 Post-rebuild regression check
+
+`_verify_all.py` was executed inside `automl-generation-worker`, checking
+`train_path` and `test_path` for every row in `datasets`:
+
+* 5 datasets × 2 splits = 10 files. All **OK**.
+* No regressions from the container rebuild.
+* Both new stable-path imports (breast-w id=5, adult id=6) resolve
+  correctly.
+
+### J.7 Cumulative state deltas (post-Stage-4a → post-Stage-4a-bis)
+
+| item                                | post-Stage-4a | post-Stage-4a-bis |
+|-------------------------------------|---------------|-------------------|
+| `run_results` row count             | 94            | **99** (+5: 3 super divergence + 1 B0 retry + 1 adult B2) |
+| Datasets registered                 | 3             | **5** (+2: breast-w id=5, adult id=6)                     |
+| Data-service container              | pre-patch     | **rebuilt with patch (`43fd18a` on data-service repo)**   |
+| Panel                               | 2-backend confirmed / 3-backend pending | **3-backend confirmed** |
+| Nemotron slot                       | vacant        | **`nemotron-3-super:cloud`** |
+| Stage 4b wall-clock estimate        | 6–15 h        | **8–10 h**        |
+
+### J.8 Code changes committed at end of Stage 4a-bis
+
+| Repo                | Change                                                                       |
+|---------------------|------------------------------------------------------------------------------|
+| `major-project-AutoML` | this appendix (this commit)                                               |
+| `automl-data-service` | `feat(service): stable-path uploads (Stage 4a migration)` (`43fd18a`)     |
+| Other 6 repos       | clean                                                                        |
+| DB                  | 2 new datasets (breast-w id=5, adult id=6); +5 `run_results` rows            |
+
+Stage 4a-bis rollback anchor: git tag `stage4a-complete` on all 8 repos
+(applied to 7 immediately at Task 0; backfilled on `automl-data-service`
+after Task 3a committed the patch).
+
+### J.9 Handoff to Stage 4b (final)
+
+Ordered by scheduling dependency:
+
+1. **Panel is locked.** No further model decisions needed. Sweep the
+   4-model cross with `gpt-oss:120b-cloud`, `gemma4:31b-cloud`,
+   `nemotron-3-super:cloud` as primaries and
+   `nemotron-3-nano:30b-cloud` in reserve.
+2. **Import 7 remaining OpenML datasets** as Stage 4b Task 0:
+   `openml_ids ∈ {37, 38, 44, 151, 1461, 1487, 1510}`. All route
+   through the rebuilt data-service and land at `stable/<id>/` on
+   first save.
+3. **Filter `run_results.id=96` out of Stage 4b analysis.** It is an
+   infrastructure-failure row from a mid-session `ollama.exe` restart,
+   not a model failure. Its retry (`seed=9604`) is the valid data
+   point.
+4. **Do not restart `ollama.exe` mid-sweep.** Cold-call reads hit a
+   600 s read timeout, poisoning any in-flight jobs.
+
+### J.10 Reproducibility notes
+
+- `pre_stage4a_bis.dump` (26 KB, 94 rows) and `post_stage4a_bis.dump`
+  (28 KB, 99 rows) at `../review/stage4a-bis/` bracket the stage.
+- The `_relocate_to_stable` patch is now in `automl-data-service`
+  history at `43fd18a`. Fresh clones will get it automatically; the
+  container just needs a `docker compose build data-service` after
+  clone to bring it into the image.
+- The two new OpenML dataset registrations (breast-w id=5, adult id=6)
+  are both by-product of Stage 4a-bis validation, not intended as
+  research artifacts. Stage 4b will include them in its panel because
+  they are part of Design B's 12-dataset list.
+- Meta-features for adult were computed once during Stage 4a-bis
+  (cached in DB) so Stage 4b's first adult B2 cell will not pay the
+  1.17 s meta-feature cost again.
 
 ---
 

@@ -1,7 +1,7 @@
 # Meta-Feature-Guided Prompting for LLM-Driven Tabular AutoML: A System Study on Faithfulness and Correctness
 
 **Status:** In-progress research report (paper draft basis)
-**Working dates:** 2026-07-09 to 2026-07-19 (Stage 1–2: 07-14 → 07-15; Stage 3: 07-15 → 07-16; Stage 4a: 07-19 daytime; Stage 4a-bis: 07-19 evening)
+**Working dates:** 2026-07-09 to 2026-07-28 (Stage 1–2: 07-14 → 07-15; Stage 3: 07-15 → 07-16; Stage 4a: 07-19 daytime; Stage 4a-bis: 07-19 evening; Stage 4b Primary: 07-27 → 07-28; Stage 5a merge + Stage 5b analysis: 07-28)
 **Author of record:** Samarth Adhikari (Major Project, undergraduate thesis)
 **Codebase:** github.com/Major-Proj-AutoML/*  +  github.com/Samarth-Ad/major-project-AutoML
 
@@ -45,6 +45,7 @@ The system contributes: (i) a **verifiable AutoML pipeline** that separates fait
 19. [Appendix H — Stage-1 and Stage-2 Operational Log (2026-07-14 → 2026-07-15)](#appendix-h--stage-1-and-stage-2-operational-log-2026-07-14--2026-07-15)
 20. [Appendix I — Stage 3 & Stage 4a Pre-Sweep Validation (2026-07-15 → 2026-07-19)](#appendix-i--stage-3--stage-4a-pre-sweep-validation-2026-07-15--2026-07-19)
 21. [Appendix J — Stage 4a-bis Substitution Qualification & Rebuild (2026-07-19)](#appendix-j--stage-4a-bis-substitution-qualification--rebuild-2026-07-19)
+22. [Appendix K — Stage 4b Primary Sweep, Stage 5a Merge, Stage 5b Analysis (2026-07-27 → 2026-07-28)](#appendix-k--stage-4b-primary-sweep-stage-5a-merge-stage-5b-analysis-2026-07-27--2026-07-28)
 
 ---
 
@@ -1906,6 +1907,203 @@ Ordered by scheduling dependency:
 - Meta-features for adult were computed once during Stage 4a-bis
   (cached in DB) so Stage 4b's first adult B2 cell will not pay the
   1.17 s meta-feature cost again.
+
+---
+
+## Appendix K — Stage 4b Primary Sweep, Stage 5a Merge, Stage 5b Analysis (2026-07-27 → 2026-07-28)
+
+This appendix appends to Appendix J and documents the three stages that took the project from "runway validated" (end of Stage 4a-bis) to "full 540-cell corpus statistically analyzed". Nothing above this line has been modified. Full working files live at:
+
+* Stage 4b Primary: `../review/stage4b-primary/` (33 files)
+* Stage 5a merge: `../review/stage5a/` (18 files, including the canonical `post_merge.dump`)
+* Stage 5b analysis: `../review/stage5b/` (17 artifacts + meta-report)
+
+Teammate's half of Stage 4b (the "Secondary" sweep on 6 light datasets: Titanic, Telco, breast-w, diabetes, spambase, wdbc) was executed independently on a laptop and merged into the D:\ machine's canonical DB in Stage 5a.
+
+### K.1 Stage 4b Primary — 270-cell sweep on D:\ (2026-07-27 → 2026-07-28)
+
+**Panel** (locked at Stage 4a-bis):
+
+* Primaries: `gpt-oss:120b-cloud`, `gemma4:31b-cloud`, `nemotron-3-nano:30b-cloud`
+* Note: nano substituted for nemotron-super after reviewer decision. Nano's Stage 4a-bis backup qualification was CONDITIONAL — good enough for the sweep, though it demanded a token cap (§K.1.1) to prevent runaway generation.
+
+**Datasets** (my half, 6 "heavy" datasets): ames_housing (id=4, regression 2930 × 81), adult (id=6, 48842 × 15), sick (id=8, 3772 × 30), electricity (id=10, 45312 × 9), bank-marketing (id=11, 45211 × 17), ozone-level-8hr (id=12, 2534 × 73).
+
+**Design**: 6 datasets × 3 conditions × 3 backends × 5 seeds (3001–3005) = **270 cells**, `max_iter=3`, `timeout=300s`.
+
+#### K.1.1 Nano B2 num_predict cap (code change)
+
+Nano's B2 (metafeature-guided) prompts caused it to emit 22k–26k completion tokens per iteration — driving multi-minute ollama calls that frequently hit the 600s read timeout as an `infrastructure` failure. Two minimal code changes gated by `llm_backend == "nemotron-3-nano:30b-cloud" AND condition == "b2_metafeature"` cap `num_predict` at 8000:
+
+| repo                        | commit    | change                                                                 |
+|-----------------------------|-----------|------------------------------------------------------------------------|
+| `automl-reusables`          | `9733124` | `call_llm_with_usage(..., num_predict=None)` — optional Ollama cap    |
+| `automl-generation-service` | `9ed9eaa` | `jobs.run_cell` sets `num_predict=8000` for nano B2 only              |
+
+Smoke test on breast-w confirmed the cap fires exactly at 8000 tokens per iter (24000 total across 3 iters). Trade-off: cap induces `runtime_other` truncation failures instead of runaway `infrastructure` timeouts — fewer minutes lost per failed cell, but no rescued success.
+
+#### K.1.2 Sweep execution — three incidents documented, all recovered
+
+* **Sweep 6 aborted at 84/270**: Ollama process died on the Windows host mid-sweep (unrelated to the sweep — earlier session's taskkill left it in a bad state). Every cell failed with `ollama unreachable`. Purged 193 contaminant rows, restarted ollama, re-ran.
+* **Sweep 7 stalled at 39/270**: sweep dispatcher hung with queue drained and no new completions for 20+ min while heartbeating. Diagnosed as a stuck dispatcher waiting on a garbage-collected job reference. Direct `POST /runs` re-enqueue for the 231 missing tuples got past it. `run_results` writes are per-tuple upserts, so no duplicates from the double-processing.
+* **Final stall at 266/270**: 4 slow `gemma4 B2 on ames_housing` cells at ~9 min each. Cleared, one seed (3002) needed one more manual retry after a silent DB write miss.
+
+**Wall clock: 7.68 h** for the full 270 cells (including recovery). Total success: **80.0% (216/270)**.
+
+Per-backend outcome:
+
+| backend                     | attempted | succeeded | %    |
+|-----------------------------|-----------|-----------|------|
+| gpt-oss:120b-cloud          | 90        | 84        | 93.3 |
+| gemma4:31b-cloud            | 90        | 69        | 76.7 |
+| nemotron-3-nano:30b-cloud   | 90        | 63        | 70.0 |
+
+Per-condition on the primary half:
+
+| condition | attempted | succeeded | % |
+|-----------|-----------|-----------|---|
+| B0 | 90 | 86 | 95.6 |
+| B1 | 90 | 89 | 98.9 |
+| B2 | 90 | 41 | 45.6 |
+
+**B2 was the weak spot on every backend** — replicating the Stage 4a canary finding at scale.
+
+Full details in `../review/stage4b-primary/STAGE4B_PRIMARY_REPORT.md`.
+
+### K.2 Stage 5a — Database merge (2026-07-28)
+
+**Input**: teammate's `post_sweep.dump` at `D:\temp\proj\stage4b-secondary\post_sweep.dump` (43 KB, 326 rows = 270 Stage 4b Secondary sweep + 56 pre-existing).
+
+**Method**: Restored into a scratch DB (`merge_scratch`), inspected schema, built dataset ID remapping, executed a single `INSERT ... SELECT FROM dblink(...)` inside `BEGIN/COMMIT` with in-transaction verification SELECTs.
+
+**Dataset ID mapping** (all 6 REMAP, zero REGISTER_NEW, zero row-count warnings):
+
+| teammate_id | dataset             | teammate_n_rows | D:\_id | D:\_n_rows |
+|-------------|---------------------|-----------------|--------|------------|
+| 2           | train (Titanic)     | 891             | 2      | 891 (identity map) |
+| 3           | WA_Fn-UseC_-Telco-Customer-Churn | 7043 | 3 | 7043 (identity map) |
+| 4           | breast-w            | 699             | 5      | 699        |
+| 5           | diabetes            | 768             | 7      | 768        |
+| 6           | spambase            | 4601            | 9      | 4601       |
+| 7           | wdbc                | 569             | 13     | 569        |
+
+The predicted "Telco 20-vs-21 columns" discrepancy from the customerID drop did not materialize — both machines have Telco at 21 cols.
+
+**Merge outcome**: 270 rows inserted, `total_after_merge=640`, `orphaned=0`. One pre-existing duplicate tuple at `(dataset_id=3, condition='B1', llm_backend='gpt-oss:120b-cloud', seed=44)` (rows 24 and 32, created 2026-07-10) was already noted in Stage 1 H.7 handoff — not merge-caused.
+
+**Canonical corpus at end of Stage 5a**: 540 sweep cells across 12 datasets × 3 backends × 3 conditions × 5 seeds. Overall success 83.7%. Written to `../review/stage5a/post_merge.dump` (68 KB) — this file is the paper's data.
+
+Full details in `../review/stage5a/STAGE5A_MERGE_REPORT.md`.
+
+### K.3 Stage 5b — Statistical analysis (2026-07-28)
+
+READ-ONLY analysis. Produced 17 paper-ready artifacts under `../review/stage5b/artifacts/`: 7 tables (each in both booktabs `.tex` and Markdown), 1 pgfplots figure, 1 CSV of scatter data, 1 analysis summary.
+
+Two initial script fixes:
+
+1. **Boolean coercion**: Postgres COPY writes booleans as `t`/`f` character literals; the arrow-backed pandas CSV reader kept them as strings, which broke arithmetic in the completion-rate computation. Explicit cast via `.astype(str).isin(["t","true","True"]).astype(bool)`.
+2. **JSONB key naming**: `verification_report` uses `faithful` and `n_faithful` — not the `verified` and `verified_decisions` names the plan assumed. Parser updated to the actual schema.
+
+#### K.3.1 Statistical results
+
+**Test 1 (completion rate)**: paired Wilcoxon signed-rank on binary success per (dataset, seed) tuple, comparing B2 vs baselines. Nano excluded from primary tests due to capped/uncapped protocol asymmetry.
+
+| test               | n pairs | W    | p        | sig |
+|--------------------|---------|------|----------|-----|
+| gpt-oss B0 vs B2   | 12      | 6.5  | 0.0039   | **  |
+| gpt-oss B1 vs B2   | 11      | 0.0  | 0.00091  | *** |
+| gemma4 B0 vs B2    | 22      | 11.5 | 2.0e-05  | *** |
+| gemma4 B1 vs B2    | 24      | 12.5 | 7.1e-06  | *** |
+
+All four tests p < 0.01. **B2 significantly reduces completion rate on both primary backends.** Direction robust.
+
+**Test 2 (quality conditional on success)**: paired Wilcoxon on `test_score` across (dataset, seed) tuples where both conditions succeeded; Ames regression excluded.
+
+| test              | n pairs | B2 mean | baseline | W     | p     | sig |
+|-------------------|---------|---------|----------|-------|-------|-----|
+| gpt-oss B2 vs B0  | 44      | 0.8572  | 0.8422   | 353.5 | 0.099 | ns  |
+| gpt-oss B2 vs B1  | 45      | 0.8559  | 0.8401   | 356.5 | 0.106 | ns  |
+| gemma4 B2 vs B0   | 32      | 0.8505  | 0.8447   | 221.0 | 0.596 | ns  |
+| gemma4 B2 vs B1   | 32      | 0.8507  | 0.8489   | 236.0 | 0.814 | ns  |
+
+**All four favor B2 directionally, but none crosses p < 0.05.** The paper's current "B2 achieves higher quality when it works" claim needs softening (or more seeds). gpt-oss is marginal (p ~ 0.10); gemma4 shows essentially no quality effect.
+
+#### K.3.2 Error mechanisms differ by backend (SUPPORTED)
+
+- **gemma4 B2**: 19/23 failures are `reasoning_unfaithful` — the verifier catches the mismatch between stated reasoning and emitted code. This directly instantiates the report's core faithfulness-vs-correctness thesis.
+- **nano B2**: 26 `runtime_other` + 19 `infrastructure` = 45/49 failures. The 8000-token cap trades runaway `infrastructure` timeouts for truncated-output `runtime_other`.
+- **gpt-oss B2**: 11 failures spread across 4 categories — no dominant mechanism.
+
+#### K.3.3 Faithfulness verifier (SUPPORTED)
+
+100% of B2 cells that emit a `verification_report` are `faithful=True` — 49/49 on gpt-oss, 37/37 on gemma4, 11/11 on nano. The verifier is systematically able to check code-vs-reasoning alignment whenever the runner reaches that stage. This is a strong result for the paper's methodological contribution.
+
+#### K.3.4 Size stratification (SUPPORTED)
+
+| backend | B2 small (<3k) | B2 medium (3k–20k) | B2 large (≥20k) |
+|---------|----------------|--------------------|-----------------|
+| gpt-oss | 23/30 (77%)    | 13/15 (87%)        | 13/15 (87%)    |
+| gemma4  | 21/30 (70%)    | 7/15 (47%)         | 9/15 (60%)     |
+| nano    | 10/30 (33%)    | 1/15 (7%)          | **0/15 (0%)**  |
+
+gpt-oss is size-agnostic on B2. gemma4 degrades on medium. **Nano B2 collapses to 0% on large datasets** — token cost of B2 prompts on 45k+ row datasets overwhelms both the num_predict cap and the connection timeout.
+
+Full analysis in `../review/stage5b/STAGE5B_REPORT.md` (meta-report) and `../review/stage5b/artifacts/STAGE5B_ANALYSIS_REPORT.md` (paper-facing).
+
+### K.4 Cumulative state deltas (post-Stage-4a-bis → post-Stage-5b)
+
+| item                                 | post-4a-bis | post-5b      |
+|--------------------------------------|-------------|--------------|
+| `run_results` row count              | 99          | **640**      |
+| Datasets registered                  | 5           | **13**       |
+| Sweep cells                          | 0           | **540**      |
+| Overall sweep success                | n/a         | **83.7%**    |
+| Wilcoxon Test 1 (completion) results | not run     | **4/4 significant** |
+| Wilcoxon Test 2 (quality) results    | not run     | 4/4 directional, 0/4 significant |
+| Faithfulness verifier                | untested at scale | **100% on emitted reports** |
+| Nano cap in code                     | proposed    | **committed** (`9733124` + `9ed9eaa`) |
+
+### K.5 Code changes committed by Stage 4b/5a/5b
+
+| Repo                            | Commit    | Change                                                                    |
+|---------------------------------|-----------|---------------------------------------------------------------------------|
+| `automl-reusables`              | `9733124` | `call_llm_with_usage(..., num_predict=None)` — optional Ollama cap        |
+| `automl-generation-service`     | `9ed9eaa` | `jobs.run_cell` applies `num_predict=8000` on nano B2                    |
+| `major-project-AutoML`          | (this commit) | this appendix                                                        |
+| Other 5 repos                   | clean     | no changes needed                                                         |
+
+### K.6 Handoff for paper drafting (Stage 5c)
+
+**Ready for the paper**:
+
+- Table 1 (panel) — Section 4 anchor
+- Table 2 (completion + Wilcoxon Test 1) — **primary results table**; the F1 significance is the headline
+- Table 3 (quality + Wilcoxon Test 2) — F2 nuance; language needs to soften from "achieves higher quality" to "shifts distribution upward on average, not statistically significant"
+- Table 4 (error taxonomy) — Section 5 (Discussion), instantiates F3
+- Table 5 (faithfulness) — Section 5, F4 — the methodological contribution
+- Table 6 (size-stratified) — F5
+- Table 7 (nano secondary) — Section 5.x (Limitations), the mixed-protocol note
+- Figure 1 (trade-off scatter) — visual companion to Tables 2 + 3
+
+**Needs advisor discussion before submission**:
+
+1. **F2 non-significance** — abstract currently overclaims. Fix: soften to "directional trend", OR run more seeds to increase paired-test power, OR reframe as effect-size (rank-biserial) rather than significance.
+2. **Nano protocol asymmetry** — half capped, half uncapped. Paper needs a clean stance: fully report both halves in Table 7 (current plan) OR exclude nano entirely from the primary comparison.
+3. **Ames Housing regression** — excluded from Wilcoxon Test 2. Either add a separate Section 4.x for the regression case study, or explicitly limit paper scope to classification.
+
+**Still missing for a full-length submission**:
+
+- Traditional AutoML baseline (TPOT / auto-sklearn / H2O) on the same 12 datasets.
+- B2-lite ablation (long prompt without meta-features) to isolate the meta-feature contribution from just "more context".
+- Qualitative review of 5–10 `reasoning_unfaithful` gemma4 cases.
+- Token-cost accounting — B2 uses ~10× more tokens than B0; the trade-off narrative deserves the numbers.
+
+### K.7 Reproducibility notes
+
+* Every stage produced pre/post `pg_dump` files, all restore-verified.
+* `../review/stage5a/post_merge.dump` (68 KB, 640 rows) is the canonical dataset. Restore it into a fresh Postgres instance to reproduce all Stage 5b analyses.
+* Rollback tag `stage4b-primary-start` on all 8 repos marks the state before the sweep.
+* The Ollama panel members (`gpt-oss:120b-cloud`, `gemma4:31b-cloud`, `nemotron-3-nano:30b-cloud`) are cloud-hosted models — availability at reproduction time is not guaranteed (see Appendix I §I.3.2 for the `nemotron-3-ultra:cloud` delisting precedent).
 
 ---
 
